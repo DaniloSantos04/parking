@@ -1,5 +1,6 @@
 package com.estapar.parking.adapter.out.persistence.entity
 
+import com.estapar.parking.domain.model.LicensePlate
 import com.estapar.parking.domain.model.SessionStatus
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
@@ -19,7 +20,7 @@ class ParkingSessionEntity(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long? = null,
 
-    @Column(name = "license_plate", nullable = false, length = 20)
+    @Column(name = "license_plate", nullable = false, length = LicensePlate.MAX_LENGTH)
     val licensePlate: String,
 
     @Enumerated(EnumType.STRING)

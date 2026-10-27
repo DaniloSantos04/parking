@@ -1,6 +1,7 @@
 package com.estapar.parking.adapter.out.persistence.entity
 
 import com.estapar.parking.domain.model.AnomalyType
+import com.estapar.parking.domain.model.LicensePlate
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.EnumType
@@ -22,7 +23,7 @@ class AnomalyEntity(
     @Column(nullable = false, length = 40)
     val type: AnomalyType,
 
-    @Column(name = "license_plate", length = 20)
+    @Column(name = "license_plate", length = LicensePlate.MAX_LENGTH)
     val licensePlate: String?,
 
     @Column(nullable = false, length = 500)

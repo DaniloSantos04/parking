@@ -5,6 +5,7 @@ import com.estapar.parking.adapter.out.persistence.entity.ParkingSessionEntity
 import com.estapar.parking.adapter.out.persistence.repository.AnomalyJpaRepository
 import com.estapar.parking.adapter.out.persistence.repository.ParkingSessionJpaRepository
 import com.estapar.parking.domain.model.AnomalyType
+import com.estapar.parking.domain.model.LicensePlate
 import com.estapar.parking.domain.model.SessionStatus
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -167,8 +168,15 @@ class WebhookEntryTest(
     }
 
     @Test
-    fun `ENTRY com placa maior que 20 caracteres responde 400`() {
-        entry("A".repeat(21)).andExpect { status { isBadRequest() } }
+    fun `ENTRY com placa no tamanho maximo e aceito`() {
+        entry("A".repeat(LicensePlate.MAX_LENGTH)).andExpect { status { isOk() } }
+        assertEquals(1, sessionRepository.count())
+    }
+
+    @Test
+    fun `ENTRY com placa acima do tamanho maximo responde 400`() {
+        entry("A".repeat(LicensePlate.MAX_LENGTH + 1)).andExpect { status { isBadRequest() } }
+        assertEquals(0, sessionRepository.count())
     }
 
     @Test

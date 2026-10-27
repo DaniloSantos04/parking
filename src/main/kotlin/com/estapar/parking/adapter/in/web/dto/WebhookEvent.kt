@@ -1,6 +1,7 @@
 package com.estapar.parking.adapter.`in`.web.dto
 
 import com.estapar.parking.adapter.`in`.web.json.FlexibleInstantDeserializer
+import com.estapar.parking.domain.model.LicensePlate
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
@@ -20,7 +21,7 @@ sealed interface WebhookEvent {
 
 @JvmRecord
 data class EntryEvent(
-    @field:NotBlank @field:Size(max = MAX_PLATE_LENGTH)
+    @field:NotBlank @field:Size(max = LicensePlate.MAX_LENGTH)
     @JsonProperty("license_plate")
     override val licensePlate: String,
 
@@ -28,6 +29,3 @@ data class EntryEvent(
     @JsonDeserialize(using = FlexibleInstantDeserializer::class)
     val entryTime: Instant,
 ) : WebhookEvent
-
-/** Limite da coluna license_plate no banco. */
-const val MAX_PLATE_LENGTH = 20
