@@ -218,6 +218,26 @@ Exemplos numa garagem de 100 vagas:
 
 Na garagem do simulador (30 vagas), os limites caem entre números inteiros de carros: 7 dentro (23,3%) dá 0,90, 8 dentro (26,7%) dá 1,00, 15 (50%) dá 1,00, 16 (53,3%) dá 1,10, 22 (73,3%) dá 1,10 e 23 (76,7%) dá 1,25.
 
+### Tarifa
+
+O valor é calculado na saída por `FeeCalculator` (`domain.pricing`):
+
+1. Permanência de **até 30 minutos (inclusive)**: R$ 0,00.
+2. Acima de 30 minutos: cobra **horas cheias, arredondadas para cima, contando desde a primeira hora**. Hora iniciada é hora cobrada.
+3. `valor = horas × preço-base do setor × multiplicador travado no ENTRY`.
+4. Só o valor final é arredondado, para 2 casas com `HALF_UP`. Todo o cálculo usa `BigDecimal`.
+
+| Permanência | Horas cobradas | Preço-base | Multiplicador | Valor |
+|---|---|---|---|---|
+| 30 min | 0 | R$ 10,00 | 1,00 | R$ 0,00 |
+| 30 min e 1 s | 1 | R$ 10,00 | 1,00 | R$ 10,00 |
+| 31 min | 1 | R$ 10,00 | 1,10 | R$ 11,00 |
+| 1 h | 1 | R$ 10,00 | 0,90 | R$ 9,00 |
+| 1 h e 1 s | 2 | R$ 10,00 | 1,00 | R$ 20,00 |
+| 61 min | 2 | R$ 10,00 | 1,10 | R$ 22,00 |
+| 1 h | 1 | R$ 40,50 (setor A) | 1,25 | R$ 50,63 (50,625) |
+| 3 h | 3 | R$ 4,10 (setor B) | 1,25 | R$ 15,38 (15,375) |
+
 ## Decisões de interpretação
 
 Esta seção é preenchida conforme as histórias são implementadas.
@@ -254,6 +274,14 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | Limites das faixas: `< 25%`, `≤ 50%`, `≤ 75%`, `< 100%` | O enunciado diz "menor que 25%" e "menor até 50%/75%/100%". Isso foi lido como 25% exatos já fora do desconto, e 50% e 75% exatos ainda na faixa de baixo. 100% fecha a garagem. Os testes cobrem cada limite (24, 25, 50, 51, 75, 76, 99 e 100 de 100). | Outras leituras de "menor até", que movem os limites em um carro. |
 | Comparação de lotação com aritmética inteira | `ocupados × 100 < capacidade × 25` é exato. Dividir antes (por exemplo 7/30 = 0,2333…) introduziria arredondamento justamente nos limites. | Calcular a porcentagem em `Double`. |
 | `PricingPolicy` como interface no domínio | A regra de preço é a parte do sistema com mais chance de mudar. Os serviços dependem da abstração, e uma nova política entra como nova implementação, sem alterar quem a usa (aberto/fechado e inversão de dependência). | Regra embutida no serviço de entrada. |
+| 30 minutos grátis, inclusive | O enunciado diz "primeiros 30 minutos são grátis". Exatamente 30 minutos ainda está dentro dos primeiros 30, então a cobrança começa no primeiro instante depois deles (30 min e 1 ms já paga). | Cobrar a partir de 30 minutos exatos. |
+| Primeira hora cobrada inteira | O enunciado diz "inclusive a primeira hora". Quem passa dos 30 minutos paga a primeira hora cheia, sem descontar os 30 minutos grátis. | Descontar os 30 minutos e cobrar só o excedente. |
+| Hora iniciada é hora cobrada, com precisão de milissegundos | "Arredonde para cima" aplicado à duração exata: 1 h e 1 s são 2 horas. As datas do simulador têm segundos, as do enunciado têm milissegundos, e o cálculo trata ambas sem truncar para minutos. | Arredondar por minutos inteiros, o que perde segundos. |
+| Horas arredondadas antes do multiplicador | O ajuste dinâmico incide sobre o preço da permanência cobrada. Arredondar a duração primeiro mantém a regra "hora cheia" independente do ajuste. | Aplicar o multiplicador à duração fracionária. |
+| Arredondamento só no valor final, `HALF_UP` | Evita acumular erro de arredondamento por hora (3 h × R$ 4,10 × 1,25 dá R$ 15,38, não R$ 15,39). `HALF_UP` é o arredondamento comercial usual. | Arredondar o preço de cada hora, ou `HALF_EVEN`. |
+| `BigDecimal` para dinheiro | Valores monetários exatos. Com ponto flutuante, R$ 4,10 × 10 vira 41.00000000000001, como mostra o próprio log do simulador. | `Double`. |
+| Saída anterior à entrada é rejeitada pelo cálculo | É dado inconsistente: o domínio não inventa um valor. Quem chama (o processamento do EXIT) decide como registrar a anomalia. | Calcular com duração negativa ou zerar em silêncio. |
+| `FeeCalculator` como `object` | A tarifa é uma função pura e fixa do enunciado, sem estado nem variação prevista. | Interface com implementação, sem necessidade concreta (YAGNI). |
 | MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
 
 ## Branches e commits
