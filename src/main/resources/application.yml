@@ -16,7 +16,19 @@ spring:
           time_zone: UTC
   flyway:
     locations: classpath:db/migration
+  http:
+    client:
+      # Timeouts do RestClient: uma tentativa de carga não pode ficar pendurada indefinidamente.
+      connect-timeout: 2s
+      read-timeout: 5s
 
 server:
   # O simulador envia os eventos para http://localhost:3003/webhook
   port: 3003
+
+estapar:
+  simulator:
+    base-url: ${SIMULATOR_URL:http://localhost:3000}
+    retry:
+      max-attempts: 5
+      interval: 5s

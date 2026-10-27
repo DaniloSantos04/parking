@@ -122,6 +122,71 @@ Para não depender só do exemplo do enunciado, o simulador foi executado com um
 - **Simulação única.** Um novo `GET /garage` não reinicia a simulação. Se uma entrega ao webhook falha (aplicação fora do ar), o evento se perde e não há reenvio.
 - **Variáveis de ambiente.** O binário lê `CLIENT_WEBHOOK_URL`, `SIMULATOR_PORT`, `ENTRY_INTERVAL_SECS` e `EXIT_INTERVAL_SECS`. A imagem declara `EXTERNAL_API_URL`, mas o binário **ignora** essa variável, e por isso o plano B usa `CLIENT_WEBHOOK_URL`.
 
+### Configuração
+
+| Propriedade (`application.yml`) | Variável de ambiente | Padrão | Uso |
+|---|---|---|---|
+| `estapar.simulator.base-url` | `SIMULATOR_URL` | `http://localhost:3000` | Endereço do simulador (`GET /garage`) |
+| `estapar.simulator.retry.max-attempts` | — | `5` | Tentativas da carga inicial |
+| `estapar.simulator.retry.interval` | — | `5s` | Espera entre as tentativas |
+| `spring.http.client.connect-timeout` | — | `2s` | Timeout de conexão com o simulador |
+| `spring.http.client.read-timeout` | — | `5s` | Timeout de leitura da resposta |
+
+Qualquer propriedade pode ser sobrescrita na linha de comando, por exemplo `--estapar.simulator.retry.interval=1s`.
+
+## Arquitetura
+
+O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de regras não conhece HTTP, JSON nem JPA. Ele se comunica com o mundo por interfaces (ports), e as tecnologias ficam nas pontas (adapters).
+
+```
+                 ┌──────────────────────── application ────────────────────────┐
+  adapter/in     │  port/in (casos de uso)        service        port/out      │     adapter/out
+ ─────────────   │  ─────────────────────        ─────────      ──────────────  │   ───────────────
+  startup   ───▶ │  LoadGarageUseCase   ◀──── GarageSetupService ───▶ Fetch... ─┼──▶ simulator (HTTP)
+  (runner)       │                                     │            Save...  ─┼──▶ persistence (JPA)
+                 │                                     ▼                       │
+                 │                            domain (modelo puro)             │
+                 └─────────────────────────────────────────────────────────────┘
+```
+
+| Pacote | Responsabilidade |
+|---|---|
+| `domain.model` | Modelo puro, sem Spring, JPA ou Jackson: `Sector`, `Spot`, `Coordinates`, `GarageConfiguration`. As invariantes ficam nos construtores. |
+| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`). |
+| `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`). Interfaces pequenas e específicas. |
+| `application.service` | Implementação dos casos de uso, orquestrando domínio e ports de saída. |
+| `adapter.in.startup` | `GarageStartupRunner`: carga inicial com novas tentativas. |
+| `adapter.out.simulator` | Cliente HTTP do simulador e DTOs do `GET /garage`. |
+| `adapter.out.persistence` | Entidades JPA, repositórios Spring Data e o adapter que grava a configuração. |
+| `config` | Propriedades tipadas (`SimulatorProperties`). |
+
+**Regras de dependência:**
+- `adapter` depende de `application`, que depende de `domain`. Nunca o contrário.
+- Entidades JPA e DTOs nunca saem dos adapters: o mapeamento para o domínio acontece dentro deles.
+
+**DTOs como records.** Os DTOs de entrada e saída e as propriedades de configuração são `@JvmRecord data class`, compilados como `java.lang.Record`. São imutáveis, com `equals` e `hashCode` por valor, e deixam explícito que só carregam dados entre camadas.
+
+## Modelo de dados
+
+| Tabela | Colunas principais | Restrições e motivo |
+|---|---|---|
+| `garage` | `id`, `capacity` | Linha única (`CHECK id = 1`), criada pela própria migration. É o alvo do lock pessimista que serializa os eventos e guarda a capacidade total. |
+| `sector` | `code`, `base_price DECIMAL(10,2)`, `max_capacity` | PK no código do setor. `DECIMAL` para dinheiro, nunca ponto flutuante. |
+| `spot` | `id`, `sector_code`, `lat`, `lng` (`DECIMAL(9,6)`), `occupied` | PK no id do simulador. FK para `sector`. `UNIQUE (lat, lng)`, porque o evento PARKED identifica a vaga só pelas coordenadas, e o índice único garante a busca exata e rápida. |
+
+## Carga inicial da garagem
+
+1. Ao subir, o `GarageStartupRunner` chama `LoadGarageUseCase`.
+2. O caso de uso busca `GET /garage` no simulador e valida a configuração no domínio: ao menos um setor, sem setor, id ou coordenada duplicados, e toda vaga em um setor existente.
+3. O adapter de persistência grava setores, vagas e capacidade numa única transação.
+4. Se a carga falha, há nova tentativa: 5 tentativas com 5 s de intervalo. Se todas falharem, a aplicação **não sobe** e loga a URL e o motivo. Exemplo:
+
+   ```
+   Não foi possível carregar a garagem de http://localhost:3000 após 5 tentativas: ResourceAccessException: I/O error on GET request for "http://localhost:3000/garage": null (causa raiz: ClosedChannelException: sem mensagem)
+   ```
+
+5. A carga é **idempotente**: subir de novo não duplica nada, atualiza preço e capacidade se mudaram e preserva a ocupação atual das vagas.
+
 ## Decisões de interpretação
 
 Esta seção é preenchida conforme as histórias são implementadas.
@@ -133,12 +198,25 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | MySQL 8.4 | É a versão LTS atual do MySQL. A 8.0 chegou ao fim do suporte em abril de 2026. | MySQL 8.0. |
 | Flyway 11.20 em vez do 11.7 gerenciado pelo Spring Boot | O Flyway 11.7 avisa que só homologa MySQL até 8.1. A linha 11.20 é a mais recente da mesma versão maior, compatível com a autoconfiguração do Spring Boot 3.5, e suporta o MySQL 8.4. | Manter o 11.7 com o aviso, ou o Flyway 12, que muda de versão maior. |
 | Schema só pelo Flyway, Hibernate em `validate` | Migrations versionadas são auditáveis e reproduzíveis. O `validate` faz a aplicação falhar na subida se as entidades divergirem do schema. | `ddl-auto: update`, que altera o schema de forma implícita. |
-| Timestamps em UTC | O banco guarda instantes em UTC (`hibernate.jdbc.time_zone` e `connectionTimeZone`). O fuso de São Paulo só é aplicado na hora de definir o "dia" do faturamento. | Gravar no horário local, o que é ambíguo no horário de verão e depende do servidor. |
+| Timestamps em UTC | O banco guarda instantes em UTC (`hibernate.jdbc.time_zone` e `connectionTimeZone`). O fuso de São Paulo só é aplicado na hora de definir o "dia" do faturamento. | Gravar no horário local, o que deixa o dado dependente do fuso do servidor e ambíguo se o fuso mudar de regra. |
 | `open-in-view: false` | A sessão JPA fica restrita à transação do serviço, sem consultas escondidas na camada web. | O padrão do Spring Boot (`true`), que gera aviso e mantém a conexão aberta durante a resposta. |
 | Testcontainers com MySQL real | Os testes de integração rodam no mesmo banco de produção, o que pega diferenças de SQL, de lock e de tipos que o H2 esconderia. | Banco em memória (H2). |
 | Simulador com `--network="host"` como padrão e plano B com `-p` | O modo `host` é o comando do enunciado e funciona no Docker Desktop com host networking ligado. O plano B atende quem não pode ligar essa opção, sem mudar nada na aplicação. | Só o comando do enunciado, que não funciona no Docker Desktop padrão. |
 | `CLIENT_WEBHOOK_URL` no plano B | É a variável que o binário do simulador lê de fato, o que foi confirmado com o envio para `host.docker.internal`. A `EXTERNAL_API_URL` declarada na imagem não tem efeito. | `EXTERNAL_API_URL`, que mantém o envio para `localhost:3003` e falha no plano B. |
 | Scripts em Bash e PowerShell | O ambiente de desenvolvimento é Mac ou Windows, e cada sistema roda o seu script sem dependências extras. | Só Bash, que exigiria Git Bash ou WSL no Windows. |
+| Arquitetura hexagonal | Isola as regras de negócio de HTTP, JSON e banco. Cada regra pode ser testada sem infraestrutura, e trocar o simulador ou o banco afeta só um adapter. | Camadas tradicionais (controller → service → repository), em que o serviço depende direto do JPA. |
+| Aceitar `base_price` e `basePrice` no `GET /garage` | O simulador real envia `base_price`, e o exemplo do enunciado mostra `basePrice`. Com `@JsonAlias`, a aplicação funciona com os dois sem código condicional. | Aceitar só um formato, o que quebraria com o simulador real ou com o contrato do enunciado. |
+| Ignorar `open_hour`, `close_hour`, `duration_limit_minutes` e `occupied` do `GET /garage` | O enunciado não define regra para horário de funcionamento nem para limite de permanência (YAGNI). A ocupação é estado da aplicação, derivado dos eventos, e não configuração. | Implementar regras que o enunciado não pede. |
+| Capacidade da garagem = soma do `max_capacity` dos setores | O enunciado define a capacidade por setor. Como a lotação é controlada para a garagem inteira, a capacidade total é a soma. No simulador, ela é igual ao número de vagas listadas (30). | Contar as vagas listadas, o que ignoraria o `max_capacity` declarado. |
+| Garagem como linha única na tabela `garage` | Dá um ponto único para o lock pessimista (`SELECT ... FOR UPDATE`) que serializa os eventos e guarda a capacidade sem recalcular a soma a cada entrada. A linha nasce na migration, então o lock nunca encontra a tabela vazia. | Lock em tabela (`LOCK TABLES`) ou recalcular a capacidade a cada evento. |
+| Coordenadas em `DECIMAL(9,6)`, normalizadas no domínio | O PARKED identifica a vaga só por lat/lng. Com escala fixa e `BigDecimal`, a comparação é por igualdade exata, sem erro de ponto flutuante. | `DOUBLE` com comparação por tolerância. |
+| Carga idempotente por upsert, preservando `occupied` | A aplicação pode reiniciar com carros dentro da garagem. Regravar a configuração não pode apagar o estado de ocupação. | Apagar e recriar setores e vagas a cada subida. |
+| Setores e vagas ausentes numa recarga não são apagados | Eles podem estar referenciados por sessões existentes. Apagar exigiria regras de migração de carros que o enunciado não define. | Remover o que não veio na nova configuração. |
+| Validar a configuração no domínio | Setor, id ou coordenada duplicados, ou vaga de setor inexistente, tornariam a lotação e a busca por coordenada ambíguas. Falhar cedo, na subida, é melhor que corromper dados depois. | Confiar no simulador e gravar o que vier. |
+| Retry com laço simples, falha na subida | São 5 tentativas com 5 s de intervalo, configuráveis. O laço explícito é fácil de ler e testar, sem dependência extra. Sem garagem não há como processar eventos, então a aplicação não sobe e loga URL e causa raiz. | `spring-retry`, ou subir sem garagem e falhar a cada evento. |
+| Sem transação durante a chamada HTTP | O serviço de carga busca a configuração fora de transação. Só a gravação é transacional, no adapter de persistência, para que uma resposta lenta do simulador não segure conexão do banco. | `@Transactional` em todo o caso de uso. |
+| Timeouts no cliente HTTP | Uma tentativa não pode ficar pendurada indefinidamente: o padrão é 2 s para conectar e 5 s para ler. | Timeouts infinitos do cliente HTTP padrão. |
+| Simulador falso nos testes de integração | Os testes de integração substituem só a busca no simulador (`@Primary`) e usam o resto da aplicação real, inclusive MySQL. O cliente HTTP é testado à parte com `MockRestServiceServer` e o JSON real capturado do simulador. | Depender do simulador rodando para executar os testes. |
 | MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
 
 ## Branches e commits
