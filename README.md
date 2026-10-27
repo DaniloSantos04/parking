@@ -68,6 +68,60 @@ Para apagar os dados e recomeçar do zero:
 docker compose down -v
 ```
 
+### Simulador
+
+O simulador do enunciado (`cfontes0estapar/garage-sim:1.0.0`) expõe `GET /garage` na porta **3000** e envia os eventos para `http://localhost:3003/webhook`.
+
+**Ordem de subida:**
+
+1. MySQL (`docker compose up -d --wait`).
+2. Simulador.
+3. Aplicação.
+
+A aplicação chama `GET /garage` ao subir. O simulador só começa a enviar eventos depois dessa primeira chamada.
+
+```bash
+./scripts/start-simulator.sh          # Git Bash, Linux ou Mac
+```
+
+```powershell
+.\scripts\start-simulator.ps1         # PowerShell
+```
+
+Os scripts têm dois modos:
+
+| Modo | Comando | Quando usar |
+|---|---|---|
+| `host` (padrão) | `docker run -d --network="host" ...`, igual ao enunciado | Linux, ou Docker Desktop com **Enable host networking** ligado (Settings → Resources → Network). Validado no Docker Desktop 4.86 no Windows. |
+| `port` (plano B) | `-p 3000:3000 -e CLIENT_WEBHOOK_URL=http://host.docker.internal:3003/webhook` | Docker Desktop sem host networking. |
+
+Exemplos: `./scripts/start-simulator.sh port` ou `.\scripts\start-simulator.ps1 -Mode port`.
+
+Para acompanhar e parar:
+
+```bash
+docker logs -f garage-sim
+```
+
+```bash
+docker rm -f garage-sim
+```
+
+#### Comportamento observado do simulador
+
+Para não depender só do exemplo do enunciado, o simulador foi executado com um servidor de captura no lugar da aplicação. O que foi observado:
+
+- **Formato do `GET /garage`.** O preço vem como `base_price` (snake_case), e não como `basePrice` do exemplo do enunciado. Vêm também campos que o enunciado não cita: `open_hour`, `close_hour` e `duration_limit_minutes` nos setores, e `occupied` nas vagas. A configuração padrão tem os setores A (R$ 40,50, 10 vagas) e B (R$ 4,10, 20 vagas), com 30 vagas no total.
+- **Formato das datas.** `entry_time` e `exit_time` chegam **sem fuso e sem milissegundos** (`2026-10-27T22:00:24`), e não como no exemplo do enunciado (`2025-01-01T12:00:00.000Z`). O relógio do container está em UTC.
+- **PARKED.** O `lat` e o `lng` correspondem exatamente às coordenadas de uma vaga do `GET /garage`.
+- **Ritmo.** Há uma entrada a cada ~5 s, e o PARKED chega logo depois do ENTRY. Os carros ficam de segundos a poucos minutos, então quase todas as permanências caem nos 30 minutos grátis. Para ver receita diferente de zero, envie eventos manuais com horários controlados.
+- **Sequência de eventos.** Numa execução de vários minutos, todo carro seguiu ENTRY → PARKED → EXIT. Não houve placa duplicada, PARKED sem ENTRY, EXIT sem PARKED nem vaga ocupada duas vezes. Os casos anômalos tratados pela aplicação são defensivos e ficam cobertos por testes.
+- **Garagem cheia.** Com as 30 vagas ocupadas, o próprio simulador deixa de enviar ENTRY e loga `No available spots for entry.` até que uma saída libere vaga. O bloqueio de entradas a 100% na aplicação é, portanto, verificado nos testes automatizados, não pelo simulador.
+- **Capacidade.** A soma do `max_capacity` dos setores (10 + 20) é igual ao número de vagas listadas (30).
+- **Receita no log do simulador.** O simulador loga uma "receita por setor" própria a cada 15 s (por exemplo `{"A": 162.0, "B": 41.00000000000001}`). Nela, cada saída soma o `base_price` cheio, mesmo em permanências de segundos, sem os 30 minutos grátis, sem preço dinâmico e com aritmética de ponto flutuante. Esse número **não** é referência para o `GET /revenue`, que segue as regras do enunciado.
+- **Simulação única.** Um novo `GET /garage` não reinicia a simulação. Se uma entrega ao webhook falha (aplicação fora do ar), o evento se perde e não há reenvio.
+- **Variáveis de ambiente.** O binário lê `CLIENT_WEBHOOK_URL`, `SIMULATOR_PORT`, `ENTRY_INTERVAL_SECS` e `EXIT_INTERVAL_SECS`. A imagem declara `EXTERNAL_API_URL`, mas o binário **ignora** essa variável, e por isso o plano B usa `CLIENT_WEBHOOK_URL`.
+
 ## Decisões de interpretação
 
 Esta seção é preenchida conforme as histórias são implementadas.
@@ -82,6 +136,9 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | Timestamps em UTC | O banco guarda instantes em UTC (`hibernate.jdbc.time_zone` e `connectionTimeZone`). O fuso de São Paulo só é aplicado na hora de definir o "dia" do faturamento. | Gravar no horário local, o que é ambíguo no horário de verão e depende do servidor. |
 | `open-in-view: false` | A sessão JPA fica restrita à transação do serviço, sem consultas escondidas na camada web. | O padrão do Spring Boot (`true`), que gera aviso e mantém a conexão aberta durante a resposta. |
 | Testcontainers com MySQL real | Os testes de integração rodam no mesmo banco de produção, o que pega diferenças de SQL, de lock e de tipos que o H2 esconderia. | Banco em memória (H2). |
+| Simulador com `--network="host"` como padrão e plano B com `-p` | O modo `host` é o comando do enunciado e funciona no Docker Desktop com host networking ligado. O plano B atende quem não pode ligar essa opção, sem mudar nada na aplicação. | Só o comando do enunciado, que não funciona no Docker Desktop padrão. |
+| `CLIENT_WEBHOOK_URL` no plano B | É a variável que o binário do simulador lê de fato, o que foi confirmado com o envio para `host.docker.internal`. A `EXTERNAL_API_URL` declarada na imagem não tem efeito. | `EXTERNAL_API_URL`, que mantém o envio para `localhost:3003` e falha no plano B. |
+| Scripts em Bash e PowerShell | O ambiente de desenvolvimento é Mac ou Windows, e cada sistema roda o seu script sem dependências extras. | Só Bash, que exigiria Git Bash ou WSL no Windows. |
 | MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
 
 ## Branches e commits
