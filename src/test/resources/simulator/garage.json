@@ -1,0 +1,25 @@
+{
+  "garage": [
+    {
+      "sector": "A",
+      "base_price": 40.5,
+      "max_capacity": 10,
+      "open_hour": "00:00",
+      "close_hour": "23:59",
+      "duration_limit_minutes": 1440
+    },
+    {
+      "sector": "B",
+      "base_price": 4.1,
+      "max_capacity": 20,
+      "open_hour": "08:00",
+      "close_hour": "23:59",
+      "duration_limit_minutes": 60
+    }
+  ],
+  "spots": [
+    { "id": 1, "sector": "A", "lat": -23.561684, "lng": -46.655981, "occupied": false },
+    { "id": 2, "sector": "A", "lat": -23.561664, "lng": -46.655961, "occupied": true },
+    { "id": 11, "sector": "B", "lat": -23.561484, "lng": -46.655781, "occupied": false }
+  ]
+}
