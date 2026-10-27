@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: parking
+
+server:
+  # O simulador envia os eventos para http://localhost:3003/webhook
+  port: 3003
