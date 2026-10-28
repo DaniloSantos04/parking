@@ -21,6 +21,10 @@ class SpotPersistenceAdapter(
         repository.save(spot(spotId).apply { occupied = true })
     }
 
+    override fun release(spotId: Long) {
+        repository.save(spot(spotId).apply { occupied = false })
+    }
+
     private fun spot(spotId: Long): SpotEntity =
         repository.findById(spotId).orElseThrow { IllegalStateException("Vaga $spotId não encontrada") }
 

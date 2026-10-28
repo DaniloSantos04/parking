@@ -9,4 +9,6 @@ interface SpotPort {
     fun isOccupied(spotId: Long): Boolean
 
     fun markOccupied(spotId: Long)
+
+    fun release(spotId: Long)
 }

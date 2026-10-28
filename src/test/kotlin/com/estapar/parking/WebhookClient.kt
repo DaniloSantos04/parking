@@ -18,4 +18,7 @@ class WebhookClient(private val mockMvc: MockMvc) {
 
     fun parked(plate: String, lat: String, lng: String) =
         post("""{"license_plate": "$plate", "lat": $lat, "lng": $lng, "event_type": "PARKED"}""")
+
+    fun exit(plate: String, time: String) =
+        post("""{"license_plate": "$plate", "exit_time": "$time", "event_type": "EXIT"}""")
 }

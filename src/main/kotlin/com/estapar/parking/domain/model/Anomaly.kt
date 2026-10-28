@@ -28,4 +28,13 @@ enum class AnomalyType {
 
     /** PARKED numa vaga que já está ocupada por outro carro. */
     SPOT_OCCUPIED,
+
+    /** EXIT de uma placa sem sessão ativa (nunca entrou ou já saiu). */
+    EXIT_WITHOUT_ACTIVE_SESSION,
+
+    /** EXIT de um carro que entrou mas nunca teve um PARKED válido: cobrado pelo menor preço-base. */
+    EXIT_WITHOUT_PARKED,
+
+    /** EXIT com horário anterior ao ENTRY: sessão encerrada sem cobrança. */
+    EXIT_BEFORE_ENTRY,
 }

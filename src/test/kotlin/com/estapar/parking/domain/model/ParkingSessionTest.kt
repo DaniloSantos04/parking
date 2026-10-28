@@ -46,7 +46,56 @@ class ParkingSessionTest {
     }
 
     @Test
-    fun `sessao encerrada nao esta ativa`() {
-        assertFalse(entered.copy(status = SessionStatus.EXITED).isActive)
+    fun `EXIT de carro estacionado cobra pelo preco-base do setor e o multiplicador travado`() {
+        val exited = entered.park(spot, BigDecimal("10.00")).exit(entryTime.plusSeconds(2 * 3600 + 1), lowest)
+
+        assertEquals(SessionStatus.EXITED, exited.status)
+        assertFalse(exited.isActive)
+        assertEquals(entryTime.plusSeconds(2 * 3600 + 1), exited.exitTime)
+        assertEquals(BigDecimal("10.00"), exited.basePrice)
+        assertEquals("A", exited.sectorCode)
+        // 3 horas cobradas × R$ 10,00 × 1,10.
+        assertEquals(BigDecimal("33.00"), exited.amount)
     }
+
+    @Test
+    fun `EXIT sem PARKED cobra pelo preco-base informado e fica sem setor`() {
+        val exited = entered.exit(entryTime.plusSeconds(3600), lowest)
+
+        assertEquals(SessionStatus.EXITED, exited.status)
+        assertNull(exited.sectorCode)
+        assertNull(exited.spotId)
+        assertEquals(lowest, exited.basePrice)
+        // 1 hora × R$ 4,10 × 1,10 = 4,51.
+        assertEquals(BigDecimal("4.51"), exited.amount)
+    }
+
+    @Test
+    fun `EXIT dentro dos 30 minutos gratis tem valor zero`() {
+        assertEquals(BigDecimal("0.00"), entered.exit(entryTime.plusSeconds(30 * 60), lowest).amount)
+    }
+
+    @Test
+    fun `EXIT anterior ao ENTRY encerra a sessao sem cobranca`() {
+        val exited = entered.exit(entryTime.minusSeconds(60), lowest)
+
+        assertEquals(SessionStatus.EXITED, exited.status)
+        assertEquals(BigDecimal("0.00"), exited.amount)
+    }
+
+    @Test
+    fun `nao sai duas vezes`() {
+        val exited = entered.exit(entryTime.plusSeconds(60), lowest)
+
+        assertThrows<IllegalStateException> { exited.exit(entryTime.plusSeconds(120), lowest) }
+    }
+
+    @Test
+    fun `nao estaciona depois de sair`() {
+        val exited = entered.exit(entryTime.plusSeconds(60), lowest)
+
+        assertThrows<IllegalStateException> { exited.park(spot, BigDecimal("10.00")) }
+    }
+
+    private val lowest = BigDecimal("4.10")
 }

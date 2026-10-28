@@ -146,7 +146,7 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
   (runner)        │                                                    SaveGarage...     ──┼─▶ persistence (JPA)
   web        ───▶ │  RegisterEntryUseCase   ◀── EntryService ────────▶ LockGaragePort    ──┼─▶ persistence (JPA)
   (webhook)       │  RegisterParkedUseCase  ◀── ParkedService ───────▶ SessionPort       ──┼─▶ persistence (JPA)
-                  │                                  │                 SpotPort          ──┼─▶ persistence (JPA)
+                  │  RegisterExitUseCase    ◀── ExitService ─────────▶ SpotPort          ──┼─▶ persistence (JPA)
                   │                                  │                 SectorPort        ──┼─▶ persistence (JPA)
                   │                                  │                 AnomalyPort       ──┼─▶ persistence (JPA)
                   │                                  ▼                                     │
@@ -158,7 +158,7 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
 |---|---|
 | `domain.model` | Modelo puro, sem Spring, JPA ou Jackson: `Sector`, `Spot`, `Coordinates`, `GarageConfiguration`, `ParkingSession`, `Anomaly`, `LicensePlate`. As invariantes ficam nos construtores. |
 | `domain.pricing` | Regras de preço: `PricingPolicy`/`OccupancyPricingPolicy`, `Occupancy` e `FeeCalculator`. |
-| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`, `RegisterEntryUseCase`, `RegisterParkedUseCase`) e seus comandos (records). |
+| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`, `RegisterEntryUseCase`, `RegisterParkedUseCase`, `RegisterExitUseCase`) e seus comandos (records). |
 | `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`, `LockGaragePort`, `SessionPort`, `SpotPort`, `SectorPort`, `AnomalyPort`). Interfaces pequenas e específicas. |
 | `application.service` | Implementação dos casos de uso, orquestrando domínio e ports de saída. É onde ficam as transações. |
 | `adapter.in.startup` | `GarageStartupRunner`: carga inicial com novas tentativas. |
@@ -180,7 +180,7 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
 | `garage` | `id`, `capacity` | Linha única (`CHECK id = 1`), criada pela própria migration. É o alvo do lock pessimista que serializa os eventos e guarda a capacidade total. |
 | `sector` | `code`, `base_price DECIMAL(10,2)`, `max_capacity` | PK no código do setor. `DECIMAL` para dinheiro, nunca ponto flutuante. |
 | `spot` | `id`, `sector_code`, `lat`, `lng` (`DECIMAL(9,6)`), `occupied` | PK no id do simulador. FK para `sector`. `UNIQUE (lat, lng)`, porque o evento PARKED identifica a vaga só pelas coordenadas, e o índice único garante a busca exata e rápida. |
-| `parking_session` | `license_plate`, `status`, `entry_time`, `price_multiplier`, e depois `spot_id`, `sector_code`, `base_price`, `exit_time`, `amount` | Uma linha por permanência. `CHECK` nos status válidos. A coluna gerada `active_plate` (a placa enquanto a sessão não terminou, `NULL` depois) tem índice único: o **banco** garante no máximo uma sessão ativa por placa. Índice em `status` para contar a lotação, e em `(status, exit_time, sector_code)` para o faturamento. |
+| `parking_session` | `license_plate`, `status`, `entry_time`, `price_multiplier`; no PARKED, `spot_id`, `sector_code` e `base_price`; no EXIT, `exit_time` e `amount` | Uma linha por permanência. Em quem saiu sem PARKED, `sector_code` fica `NULL` e `base_price` guarda o menor preço-base usado na cobrança, para o valor ser auditável. `CHECK` nos status válidos. A coluna gerada `active_plate` (a placa enquanto a sessão não terminou, `NULL` depois) tem índice único: o **banco** garante no máximo uma sessão ativa por placa. Índice em `status` para contar a lotação, e em `(status, exit_time, sector_code)` para o faturamento. |
 | `anomaly` | `type`, `license_plate`, `detail`, `occurred_at` | Eventos que não puderam ser aplicados. Índice em `(type, occurred_at)` para auditoria. |
 
 ## API
@@ -211,6 +211,16 @@ Recebe os eventos do simulador. O tipo é escolhido pelo campo `event_type`.
 ```
 
 **Coordenadas.** Normalizadas para 6 casas decimais antes da busca, então `-23.5616840` e `-23.561684` são a mesma vaga. Latitude entre −90 e 90 e longitude entre −180 e 180; fora disso, a resposta é 400.
+
+**EXIT**: o veículo saiu da garagem. O valor é calculado, a sessão é encerrada e a vaga é liberada.
+
+```json
+{
+  "license_plate": "ZUL0001",
+  "exit_time": "2025-01-01T12:00:00.000Z",
+  "event_type": "EXIT"
+}
+```
 
 **Datas.** São aceitas com fuso (`2025-01-01T12:00:00.000Z`, como no enunciado, ou `2025-01-01T09:00:00-03:00`) e sem fuso (`2025-01-01T12:00:00`, como o simulador envia). Datas sem fuso são lidas como UTC.
 
@@ -246,8 +256,12 @@ Exemplo de 400:
 | PARKED | Placa já estacionada | Ignora o evento; a vaga original é mantida | `ALREADY_PARKED` |
 | PARKED | Coordenadas sem vaga correspondente | Ignora o evento; a sessão continua `ENTERED` | `SPOT_NOT_FOUND` |
 | PARKED | Vaga já ocupada por outro carro | Ignora o evento; as duas sessões ficam como estavam | `SPOT_OCCUPIED` |
+| EXIT | Sessão `PARKED` | Cobra `horas × preço-base do setor × multiplicador`, encerra a sessão (`EXITED`) e libera a vaga | — |
+| EXIT | Sessão `ENTERED` (sem PARKED válido) | Cobra pelo **menor preço-base** da garagem, sem setor, e encerra a sessão | `EXIT_WITHOUT_PARKED` |
+| EXIT | Placa sem sessão ativa (nunca entrou ou já saiu) | Ignora o evento; nada é cobrado de novo | `EXIT_WITHOUT_ACTIVE_SESSION` |
+| EXIT | Horário de saída anterior ao de entrada | Encerra a sessão com valor R$ 0,00 e libera a vaga | `EXIT_BEFORE_ENTRY` |
 
-Uma sessão que continua `ENTERED` (sem PARKED válido) ainda ocupa lugar na lotação. Na saída, ela é cobrada pelo menor preço-base da garagem, como explicado em [Decisões de interpretação](#decisões-de-interpretação).
+Uma sessão que continua `ENTERED` (sem PARKED válido) ainda ocupa lugar na lotação até o EXIT. Encerrada a sessão, a lotação cai na hora: se a garagem estava cheia, o próximo ENTRY já é aceito.
 
 Cada anomalia é logada em `WARN` e gravada na tabela `anomaly`:
 
@@ -385,7 +399,11 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | PARKED repetido é anomalia separada (`ALREADY_PARKED`) | Distingue "carro que nunca entrou" (`PARKED_WITHOUT_ENTRY`) de "carro já estacionado que mandou PARKED de novo", o que facilita a auditoria. A vaga original é mantida pelo mesmo motivo do ENTRY repetido. | Um único tipo para os dois casos, ou trocar de vaga. |
 | PARKED também sob o lock da garagem | Dois PARKED simultâneos para a mesma vaga não podem ambos vê-la livre. O mesmo lock do ENTRY serializa a checagem e a ocupação. | Lock na linha da vaga, que exigiria uma ordem de locks entre garagem e vaga para evitar deadlock com o EXIT. |
 | Coordenadas fora da faixa geográfica respondem 400 | Latitude fora de −90..90 ou longitude fora de −180..180 não é uma posição: é payload inválido, não uma anomalia de negócio. | Tratar como `SPOT_NOT_FOUND`. |
-| Sessão sem PARKED é cobrada na saída pelo menor preço-base da garagem | O carro passou pela cancela e ocupou lugar na garagem, então a permanência é cobrada normalmente. Sem PARKED não há setor, e por isso o preço-base é o menor da garagem (favorável ao cliente, já que não se sabe onde ele parou). A receita fica sem setor: entra no faturamento total, não no de nenhum setor. O caso é registrado como anomalia. | Não cobrar, ou cobrar pelo maior preço-base. |
+| Sessão sem PARKED é cobrada na saída pelo menor preço-base da garagem | O carro passou pela cancela e ocupou lugar na garagem, então a permanência é cobrada normalmente. Sem PARKED não há setor, e por isso o preço-base é o menor da garagem (favorável ao cliente, já que não se sabe onde ele parou). A receita fica sem setor: entra no faturamento total, não no de nenhum setor. O preço-base usado fica gravado na sessão e o caso é registrado como anomalia. | Não cobrar, ou cobrar pelo maior preço-base. |
+| EXIT repetido não cobra de novo | Depois do primeiro EXIT a sessão está encerrada, então um segundo EXIT da mesma placa não encontra sessão ativa: é ignorado e vira `EXIT_WITHOUT_ACTIVE_SESSION`. O valor e o horário da primeira saída ficam como estão. | Recalcular o valor com o horário do último EXIT. |
+| Saída anterior à entrada encerra com R$ 0,00 | O carro saiu (o evento diz isso), então a sessão precisa ser encerrada para liberar a vaga e a lotação. Mas uma duração negativa não tem valor a cobrar: o domínio cobra zero e o caso vira `EXIT_BEFORE_ENTRY` para auditoria. O `exit_time` é gravado como recebido. | Ignorar o EXIT e deixar o carro "preso" na lotação, ou trocar os horários. |
+| EXIT sob o lock da garagem, com a vaga liberada na mesma transação | Encerrar a sessão, liberar a vaga e reabrir a cancela são uma operação atômica. Um ENTRY concorrente nunca vê a vaga liberada com a sessão ainda ativa, nem o contrário. | Liberar a vaga numa transação separada. |
+| A placa pode entrar de novo depois de sair | A unicidade é só de sessão **ativa** (`active_plate` vira `NULL` no EXIT). O histórico de permanências da placa fica preservado, uma linha por visita. | Reaproveitar a mesma linha a cada visita, o que apagaria o histórico do faturamento. |
 | `spot.occupied` gravado na vaga | A pergunta "esta vaga está livre?" é respondida direto pela vaga, sob o lock, sem varrer sessões. O EXIT libera a vaga na mesma transação em que encerra a sessão. | Derivar a ocupação das sessões `PARKED` a cada consulta. |
 | MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
 
