@@ -25,6 +25,9 @@ class SessionPersistenceAdapter(
         status = status,
         entryTime = entryTime,
         priceMultiplier = priceMultiplier,
+        spotId = spotId,
+        sectorCode = sectorCode,
+        basePrice = basePrice,
     )
 
     private fun ParkingSessionEntity.toDomain() = ParkingSession(
@@ -33,6 +36,9 @@ class SessionPersistenceAdapter(
         status = status,
         entryTime = entryTime,
         priceMultiplier = priceMultiplier,
+        spotId = spotId,
+        sectorCode = sectorCode,
+        basePrice = basePrice,
     )
 
     private companion object {
