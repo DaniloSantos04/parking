@@ -1,6 +1,8 @@
 package com.estapar.parking.adapter.`in`.web
 
+import com.estapar.parking.DatabaseCleaner
 import com.estapar.parking.IntegrationTest
+import com.estapar.parking.WebhookClient
 import com.estapar.parking.adapter.out.persistence.entity.ParkingSessionEntity
 import com.estapar.parking.adapter.out.persistence.repository.AnomalyJpaRepository
 import com.estapar.parking.adapter.out.persistence.repository.ParkingSessionJpaRepository
@@ -17,8 +19,6 @@ import org.springframework.boot.test.system.OutputCaptureExtension
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.ResultActionsDsl
-import org.springframework.test.web.servlet.post
 import java.math.BigDecimal
 import java.time.Instant
 import kotlin.test.assertContains
@@ -27,24 +27,19 @@ import kotlin.test.assertEquals
 /** ENTRY ponta a ponta: HTTP → serviço → MySQL. A garagem dos testes tem capacidade 5. */
 @IntegrationTest
 class WebhookEntryTest(
-    @Autowired private val mockMvc: MockMvc,
+    @Autowired mockMvc: MockMvc,
     @Autowired private val sessionRepository: ParkingSessionJpaRepository,
     @Autowired private val anomalyRepository: AnomalyJpaRepository,
+    @Autowired private val databaseCleaner: DatabaseCleaner,
 ) {
+    private val webhook = WebhookClient(mockMvc)
 
     @BeforeEach
-    fun cleanDatabase() {
-        sessionRepository.deleteAllInBatch()
-        anomalyRepository.deleteAllInBatch()
-    }
+    fun cleanDatabase() = databaseCleaner.clean()
 
-    private fun post(body: String): ResultActionsDsl = mockMvc.post("/webhook") {
-        contentType = MediaType.APPLICATION_JSON
-        content = body
-    }
+    private fun post(body: String) = webhook.post(body)
 
-    private fun entry(plate: String, time: String = "2025-01-01T12:00:00.000Z") =
-        post("""{"license_plate": "$plate", "entry_time": "$time", "event_type": "ENTRY"}""")
+    private fun entry(plate: String, time: String = "2025-01-01T12:00:00.000Z") = webhook.entry(plate, time)
 
     @Test
     fun `registra a entrada no formato do enunciado`() {

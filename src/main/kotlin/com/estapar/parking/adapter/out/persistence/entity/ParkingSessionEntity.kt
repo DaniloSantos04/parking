@@ -32,4 +32,13 @@ class ParkingSessionEntity(
 
     @Column(name = "price_multiplier", nullable = false, precision = 4, scale = 2)
     val priceMultiplier: BigDecimal,
+
+    @Column(name = "spot_id")
+    var spotId: Long? = null,
+
+    @Column(name = "sector_code", length = 10)
+    var sectorCode: String? = null,
+
+    @Column(name = "base_price", precision = 10, scale = 2)
+    var basePrice: BigDecimal? = null,
 )

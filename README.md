@@ -145,7 +145,9 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
   startup    ───▶ │  LoadGarageUseCase      ◀── GarageSetupService ──▶ FetchGarage...    ──┼─▶ simulator (HTTP)
   (runner)        │                                                    SaveGarage...     ──┼─▶ persistence (JPA)
   web        ───▶ │  RegisterEntryUseCase   ◀── EntryService ────────▶ LockGaragePort    ──┼─▶ persistence (JPA)
-  (webhook)       │                                  │                 SessionPort       ──┼─▶ persistence (JPA)
+  (webhook)       │  RegisterParkedUseCase  ◀── ParkedService ───────▶ SessionPort       ──┼─▶ persistence (JPA)
+                  │                                  │                 SpotPort          ──┼─▶ persistence (JPA)
+                  │                                  │                 SectorPort        ──┼─▶ persistence (JPA)
                   │                                  │                 AnomalyPort       ──┼─▶ persistence (JPA)
                   │                                  ▼                                     │
                   │                     domain (modelo e regras puras)                     │
@@ -156,8 +158,8 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
 |---|---|
 | `domain.model` | Modelo puro, sem Spring, JPA ou Jackson: `Sector`, `Spot`, `Coordinates`, `GarageConfiguration`, `ParkingSession`, `Anomaly`, `LicensePlate`. As invariantes ficam nos construtores. |
 | `domain.pricing` | Regras de preço: `PricingPolicy`/`OccupancyPricingPolicy`, `Occupancy` e `FeeCalculator`. |
-| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`, `RegisterEntryUseCase`) e seus comandos (records). |
-| `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`, `LockGaragePort`, `SessionPort`, `AnomalyPort`). Interfaces pequenas e específicas. |
+| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`, `RegisterEntryUseCase`, `RegisterParkedUseCase`) e seus comandos (records). |
+| `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`, `LockGaragePort`, `SessionPort`, `SpotPort`, `SectorPort`, `AnomalyPort`). Interfaces pequenas e específicas. |
 | `application.service` | Implementação dos casos de uso, orquestrando domínio e ports de saída. É onde ficam as transações. |
 | `adapter.in.startup` | `GarageStartupRunner`: carga inicial com novas tentativas. |
 | `adapter.in.web` | `WebhookController`, DTOs (records), leitura flexível de datas e `ApiExceptionHandler`. |
@@ -197,6 +199,19 @@ Recebe os eventos do simulador. O tipo é escolhido pelo campo `event_type`.
 }
 ```
 
+**PARKED**: o veículo estacionou na vaga dessas coordenadas.
+
+```json
+{
+  "license_plate": "ZUL0001",
+  "lat": -23.561684,
+  "lng": -46.655981,
+  "event_type": "PARKED"
+}
+```
+
+**Coordenadas.** Normalizadas para 6 casas decimais antes da busca, então `-23.5616840` e `-23.561684` são a mesma vaga. Latitude entre −90 e 90 e longitude entre −180 e 180; fora disso, a resposta é 400.
+
 **Datas.** São aceitas com fuso (`2025-01-01T12:00:00.000Z`, como no enunciado, ou `2025-01-01T09:00:00-03:00`) e sem fuso (`2025-01-01T12:00:00`, como o simulador envia). Datas sem fuso são lidas como UTC.
 
 **Placa.** Normalizada (sem espaços nas pontas, em maiúsculas). Obrigatória, com até 20 caracteres.
@@ -226,6 +241,13 @@ Exemplo de 400:
 | ENTRY | Garagem com vaga | Cria sessão `ENTERED` com o multiplicador da lotação antes da entrada | — |
 | ENTRY | Garagem 100% ocupada | Recusa a entrada | `GARAGE_FULL` |
 | ENTRY | Placa já tem sessão ativa | Ignora o evento; a sessão existente não muda | `DUPLICATE_ENTRY` |
+| PARKED | Sessão `ENTERED` e vaga livre nas coordenadas | Sessão vai para `PARKED` com vaga, setor e preço-base do setor; a vaga fica ocupada | — |
+| PARKED | Placa sem sessão ativa | Ignora o evento | `PARKED_WITHOUT_ENTRY` |
+| PARKED | Placa já estacionada | Ignora o evento; a vaga original é mantida | `ALREADY_PARKED` |
+| PARKED | Coordenadas sem vaga correspondente | Ignora o evento; a sessão continua `ENTERED` | `SPOT_NOT_FOUND` |
+| PARKED | Vaga já ocupada por outro carro | Ignora o evento; as duas sessões ficam como estavam | `SPOT_OCCUPIED` |
+
+Uma sessão que continua `ENTERED` (sem PARKED válido) ainda ocupa lugar na lotação. Na saída, ela é cobrada pelo menor preço-base da garagem, como explicado em [Decisões de interpretação](#decisões-de-interpretação).
 
 Cada anomalia é logada em `WARN` e gravada na tabela `anomaly`:
 
@@ -357,6 +379,14 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | Lock pessimista na linha da garagem | A decisão de entrada depende de uma contagem (lotação) e de uma escrita (sessão) que precisam ser atômicas. O lock numa linha única é simples, explícito e correto sob concorrência. | Lock otimista com `@Version`, que exigiria novas tentativas no webhook, ou nível de isolamento `SERIALIZABLE` em todas as transações. |
 | Anomalias em tabela própria | O webhook responde 200 mesmo quando recusa um evento, então a recusa precisa ficar visível. Uma tabela consultável permite auditar divergências entre a lotação do sistema e a física. | Só log. |
 | `Clock` injetado | O horário das anomalias (e depois o "dia atual" do faturamento) vem de um `Clock` bean em UTC, o que permite fixar o tempo nos testes. | `Instant.now()` espalhado pelo código. |
+| Vaga identificada pelas coordenadas exatas | O PARKED só traz lat/lng. Com a normalização para 6 casas no domínio e o índice único `(lat, lng)`, a busca é por igualdade, e o simulador envia exatamente as coordenadas do `GET /garage`, como foi verificado. | Buscar a vaga mais próxima por distância, o que mascararia coordenadas erradas. |
+| Setor e preço-base definidos no PARKED | O ENTRY não diz para qual setor o carro vai. O setor só é conhecido quando ele estaciona, e é dele que vem o `basePrice` usado na saída. O multiplicador continua o travado no ENTRY. | Definir o setor no ENTRY, o que é impossível sem coordenadas. |
+| Vaga ocupada é anomalia e nada muda | Se a vaga já tem outro carro, não há como saber qual dos dois eventos está errado. Manter o estado e registrar a anomalia não corrompe o dado existente e deixa a divergência visível. | Mover o outro carro, ou aceitar duas sessões na mesma vaga. |
+| PARKED repetido é anomalia separada (`ALREADY_PARKED`) | Distingue "carro que nunca entrou" (`PARKED_WITHOUT_ENTRY`) de "carro já estacionado que mandou PARKED de novo", o que facilita a auditoria. A vaga original é mantida pelo mesmo motivo do ENTRY repetido. | Um único tipo para os dois casos, ou trocar de vaga. |
+| PARKED também sob o lock da garagem | Dois PARKED simultâneos para a mesma vaga não podem ambos vê-la livre. O mesmo lock do ENTRY serializa a checagem e a ocupação. | Lock na linha da vaga, que exigiria uma ordem de locks entre garagem e vaga para evitar deadlock com o EXIT. |
+| Coordenadas fora da faixa geográfica respondem 400 | Latitude fora de −90..90 ou longitude fora de −180..180 não é uma posição: é payload inválido, não uma anomalia de negócio. | Tratar como `SPOT_NOT_FOUND`. |
+| Sessão sem PARKED é cobrada na saída pelo menor preço-base da garagem | O carro passou pela cancela e ocupou lugar na garagem, então a permanência é cobrada normalmente. Sem PARKED não há setor, e por isso o preço-base é o menor da garagem (favorável ao cliente, já que não se sabe onde ele parou). A receita fica sem setor: entra no faturamento total, não no de nenhum setor. O caso é registrado como anomalia. | Não cobrar, ou cobrar pelo maior preço-base. |
+| `spot.occupied` gravado na vaga | A pergunta "esta vaga está livre?" é respondida direto pela vaga, sob o lock, sem varrer sessões. O EXIT libera a vaga na mesma transação em que encerra a sessão. | Derivar a ocupação das sessões `PARKED` a cada consulta. |
 | MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
 
 ## Branches e commits
