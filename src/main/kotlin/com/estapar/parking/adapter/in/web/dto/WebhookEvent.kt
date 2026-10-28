@@ -18,6 +18,7 @@ import java.time.Instant
 @JsonSubTypes(
     JsonSubTypes.Type(value = EntryEvent::class, name = "ENTRY"),
     JsonSubTypes.Type(value = ParkedEvent::class, name = "PARKED"),
+    JsonSubTypes.Type(value = ExitEvent::class, name = "EXIT"),
 )
 sealed interface WebhookEvent {
     val licensePlate: String
@@ -45,4 +46,15 @@ data class ParkedEvent(
 
     @field:DecimalMin("-180") @field:DecimalMax("180")
     val lng: BigDecimal,
+) : WebhookEvent
+
+@JvmRecord
+data class ExitEvent(
+    @field:NotBlank @field:Size(max = LicensePlate.MAX_LENGTH)
+    @JsonProperty("license_plate")
+    override val licensePlate: String,
+
+    @JsonProperty("exit_time")
+    @JsonDeserialize(using = FlexibleInstantDeserializer::class)
+    val exitTime: Instant,
 ) : WebhookEvent

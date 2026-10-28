@@ -41,4 +41,10 @@ class ParkingSessionEntity(
 
     @Column(name = "base_price", precision = 10, scale = 2)
     var basePrice: BigDecimal? = null,
+
+    @Column(name = "exit_time")
+    var exitTime: Instant? = null,
+
+    @Column(precision = 10, scale = 2)
+    var amount: BigDecimal? = null,
 )

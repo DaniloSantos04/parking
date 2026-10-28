@@ -28,6 +28,8 @@ class SessionPersistenceAdapter(
         spotId = spotId,
         sectorCode = sectorCode,
         basePrice = basePrice,
+        exitTime = exitTime,
+        amount = amount,
     )
 
     private fun ParkingSessionEntity.toDomain() = ParkingSession(
@@ -39,6 +41,8 @@ class SessionPersistenceAdapter(
         spotId = spotId,
         sectorCode = sectorCode,
         basePrice = basePrice,
+        exitTime = exitTime,
+        amount = amount,
     )
 
     private companion object {
