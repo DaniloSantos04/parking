@@ -149,6 +149,8 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
                   │  RegisterExitUseCase    ◀── ExitService ─────────▶ SpotPort          ──┼─▶ persistence (JPA)
                   │                                  │                 SectorPort        ──┼─▶ persistence (JPA)
                   │                                  │                 AnomalyPort       ──┼─▶ persistence (JPA)
+  web        ───▶ │  GetRevenueUseCase      ◀── RevenueService ──────▶ RevenuePort       ──┼─▶ persistence (JPA)
+  (revenue)       │                                  │                 SectorPort        ──┼─▶ persistence (JPA)
                   │                                  ▼                                     │
                   │                     domain (modelo e regras puras)                     │
                   └────────────────────────────────────────────────────────────────────────┘
@@ -158,8 +160,8 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
 |---|---|
 | `domain.model` | Modelo puro, sem Spring, JPA ou Jackson: `Sector`, `Spot`, `Coordinates`, `GarageConfiguration`, `ParkingSession`, `Anomaly`, `LicensePlate`. As invariantes ficam nos construtores. |
 | `domain.pricing` | Regras de preço: `PricingPolicy`/`OccupancyPricingPolicy`, `Occupancy` e `FeeCalculator`. |
-| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`, `RegisterEntryUseCase`, `RegisterParkedUseCase`, `RegisterExitUseCase`) e seus comandos (records). |
-| `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`, `LockGaragePort`, `SessionPort`, `SpotPort`, `SectorPort`, `AnomalyPort`). Interfaces pequenas e específicas. |
+| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`, `RegisterEntryUseCase`, `RegisterParkedUseCase`, `RegisterExitUseCase`, `GetRevenueUseCase`) e seus comandos e resultados (records). |
+| `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`, `LockGaragePort`, `SessionPort`, `SpotPort`, `SectorPort`, `AnomalyPort`, `RevenuePort`). Interfaces pequenas e específicas. |
 | `application.service` | Implementação dos casos de uso, orquestrando domínio e ports de saída. É onde ficam as transações. |
 | `adapter.in.startup` | `GarageStartupRunner`: carga inicial com novas tentativas. |
 | `adapter.in.web` | `WebhookController`, DTOs (records), leitura flexível de datas e `ApiExceptionHandler`. |
@@ -243,6 +245,47 @@ Exemplo de 400:
   "instance": "/webhook"
 }
 ```
+
+### `GET /revenue`
+
+Receita das saídas de um dia, da garagem inteira ou de um setor.
+
+| Parâmetro (query) | Obrigatório | Padrão | Formato |
+|---|---|---|---|
+| `date` | não | dia atual em São Paulo | `AAAA-MM-DD` |
+| `sector` | não | garagem inteira | código do setor (`A`, `B`...); espaços e caixa são ignorados |
+
+```bash
+curl "http://localhost:3003/revenue"                          # hoje, garagem inteira
+curl "http://localhost:3003/revenue?date=2025-01-01"          # um dia, garagem inteira
+curl "http://localhost:3003/revenue?date=2025-01-01&sector=A" # um dia, um setor
+```
+
+Resposta 200, no formato do enunciado:
+
+```json
+{
+  "amount": 109.35,
+  "currency": "BRL",
+  "timestamp": "2026-10-28T18:56:19.697Z"
+}
+```
+
+- **`amount`**: soma do valor cobrado nas saídas do dia, sempre com 2 casas (`0.00` quando não há receita).
+- **`currency`**: sempre `BRL`.
+- **`timestamp`**: o instante da apuração, em UTC com milissegundos.
+
+Regras:
+
+- **Dia da saída.** A receita entra no dia em que o carro **saiu**, no fuso de **São Paulo**. O dia vai de 00:00 a 00:00 em São Paulo, e os horários são guardados em UTC: uma saída às 02:30 UTC do dia 2 conta no dia 1 (23:30 em São Paulo).
+- **Até o momento.** Para o dia atual, só as saídas já ocorridas contam. Dias futuros têm receita `0.00`.
+- **Saídas sem setor.** Quem saiu sem PARKED entra no total da garagem, mas no de nenhum setor.
+
+| Situação | HTTP | Exemplo de `detail` |
+|---|---|---|
+| Consulta válida | 200 | — |
+| `date` fora do formato `AAAA-MM-DD`, ou data inexistente | 400 | `Parâmetro inválido: date = '28-10-2026' (esperado AAAA-MM-DD)` |
+| `sector` que não existe na garagem | 404 | `Setor não encontrado: Z` |
 
 ### Eventos e anomalias
 
@@ -392,7 +435,15 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | Uma sessão ativa por placa garantida também no banco | O lock já serializa os eventos. A coluna gerada `active_plate` com índice único é uma segunda barreira, no próprio MySQL, contra duplicidade, que custa uma coluna. | Confiar só na verificação do código. |
 | Lock pessimista na linha da garagem | A decisão de entrada depende de uma contagem (lotação) e de uma escrita (sessão) que precisam ser atômicas. O lock numa linha única é simples, explícito e correto sob concorrência. | Lock otimista com `@Version`, que exigiria novas tentativas no webhook, ou nível de isolamento `SERIALIZABLE` em todas as transações. |
 | Anomalias em tabela própria | O webhook responde 200 mesmo quando recusa um evento, então a recusa precisa ficar visível. Uma tabela consultável permite auditar divergências entre a lotação do sistema e a física. | Só log. |
-| `Clock` injetado | O horário das anomalias (e depois o "dia atual" do faturamento) vem de um `Clock` bean em UTC, o que permite fixar o tempo nos testes. | `Instant.now()` espalhado pelo código. |
+| `Clock` injetado | O horário das anomalias e o "agora" do faturamento vêm de um `Clock` bean em UTC. Nos testes de integração, um relógio fixo torna "hoje" e "até o momento" determinísticos. | `Instant.now()` espalhado pelo código. |
+| `GET /revenue` com parâmetros na query string | O enunciado mostra `date` e `sector` num corpo JSON, mas corpo em `GET` não tem semântica definida (RFC 9110), e proxies e clientes HTTP podem descartá-lo. Query string é o padrão REST para filtros de leitura, funciona em qualquer cliente e pode ir para cache. | Corpo JSON no `GET`, como no exemplo do enunciado. |
+| `date` e `sector` opcionais | Sem `date`, vale o dia atual ("até o momento para o dia atual", como pede o enunciado). Sem `sector`, a receita é da garagem inteira. | Exigir os dois parâmetros. |
+| Receita no dia da **saída**, no fuso de São Paulo | O valor só existe quando o carro sai, e o "dia" de uma garagem em São Paulo é o dia local. Os horários continuam guardados em UTC e só a consulta converte o intervalo. | Dia da entrada, ou dia em UTC (que deslocaria 3 horas do faturamento para o dia seguinte). |
+| "Até o momento" limita o intervalo ao instante atual | O enunciado pede a receita "até o momento para o dia atual". O intervalo do dia termina no "agora": uma saída com horário futuro (relógio do simulador adiantado, por exemplo) não entra antes de acontecer. Dias futuros têm receita zero sem consultar o banco. | Somar o dia inteiro, inclusive saídas com horário futuro. |
+| Saídas sem setor só no total | Quem saiu sem PARKED não tem setor. Somar essa receita a um setor qualquer distorceria o faturamento daquele setor. Ela continua no total da garagem. | Atribuir ao setor de menor preço-base. |
+| 404 para setor inexistente, 400 para data inválida | Setor que não existe é recurso não encontrado. Data fora de `AAAA-MM-DD`, ou inexistente como `2025-02-30`, é parâmetro malformado. As duas respostas vêm em Problem Details com `detail` explicando o erro. | Responder 200 com `amount: 0.00`, o que esconderia o erro do cliente. |
+| Setor normalizado; em branco equivale a ausente | `?sector=a` e `?sector=A` são o mesmo setor, como acontece com a placa. `?sector=` vazio é tratado como "sem filtro", porque não identifica nenhum setor. | Diferenciar maiúsculas e minúsculas, ou responder 404 para setor vazio. |
+| `timestamp` é o instante da apuração | O exemplo do enunciado não diz o que o campo representa. O instante em que a receita foi calculada deixa claro até quando o valor "até o momento" vale. Formato fixo `AAAA-MM-DDTHH:mm:ss.SSSZ` em UTC, como no exemplo. | O início do dia consultado. |
 | Vaga identificada pelas coordenadas exatas | O PARKED só traz lat/lng. Com a normalização para 6 casas no domínio e o índice único `(lat, lng)`, a busca é por igualdade, e o simulador envia exatamente as coordenadas do `GET /garage`, como foi verificado. | Buscar a vaga mais próxima por distância, o que mascararia coordenadas erradas. |
 | Setor e preço-base definidos no PARKED | O ENTRY não diz para qual setor o carro vai. O setor só é conhecido quando ele estaciona, e é dele que vem o `basePrice` usado na saída. O multiplicador continua o travado no ENTRY. | Definir o setor no ENTRY, o que é impossível sem coordenadas. |
 | Vaga ocupada é anomalia e nada muda | Se a vaga já tem outro carro, não há como saber qual dos dois eventos está errado. Manter o estado e registrar a anomalia não corrompe o dado existente e deixa a divergência visível. | Mover o outro carro, ou aceitar duas sessões na mesma vaga. |
