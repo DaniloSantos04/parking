@@ -318,6 +318,8 @@ Todo evento que muda a lotação roda numa transação que começa com `SELECT .
 
 O custo é serializar os eventos da garagem. Para o volume de uma garagem (um evento a cada poucos segundos, transações de milissegundos), isso é desprezível e mantém a regra simples e correta.
 
+O `ConcurrencyTest` prova isso com threads simultâneas contra o MySQL real (ver [Testes](#testes)). Com o `FOR UPDATE` removido, 3 dos 4 cenários falham: entram mais carros que vagas, a mesma placa ganha mais de uma sessão e a mesma vaga é ocupada duas vezes.
+
 ## Carga inicial da garagem
 
 1. Ao subir, o `GarageStartupRunner` chama `LoadGarageUseCase`.
@@ -382,6 +384,82 @@ O valor é calculado na saída por `FeeCalculator` (`domain.pricing`):
 | 1 h | 1 | R$ 40,50 (setor A) | 1,25 | R$ 50,63 (50,625) |
 | 3 h | 3 | R$ 4,10 (setor B) | 1,25 | R$ 15,38 (15,375) |
 
+## Testes
+
+```bash
+./gradlew test
+```
+
+São 171 testes, que levam cerca de 2 minutos. Exigem o Docker rodando: o Testcontainers sobe um MySQL 8.4 e, no teste ponta a ponta, o próprio simulador. O relatório fica em `build/reports/tests/test/index.html`.
+
+| Nível | Exemplos | O que garante |
+|---|---|---|
+| **Domínio** (unitário, sem Spring) | `OccupancyPricingPolicyTest`, `FeeCalculatorTest`, `ParkingSessionTest`, `GarageConfigurationTest`, `CoordinatesTest` | As regras do enunciado nos limites exatos: faixas de lotação (24/25/50/51/75/76/99/100 de 100 e os limites da garagem de 30 vagas), 30 minutos grátis (30 min e 30 min + 1 ms), arredondamento de horas e centavos, e as transições ENTERED → PARKED → EXITED. |
+| **Aplicação** (unitário, ports com MockK) | `EntryServiceTest`, `ParkedServiceTest`, `ExitServiceTest`, `RevenueServiceTest`, `GarageSetupServiceTest`, `GarageStartupRunnerTest` | Orquestração de cada caso de uso, a ordem lock → consulta → gravação, cada tipo de anomalia, o intervalo de faturamento em São Paulo e as novas tentativas da carga inicial. |
+| **Adapters** | `SimulatorGarageAdapterTest` (`@RestClientTest`), `FlexibleInstantDeserializerTest` | Leitura do JSON real do simulador (`base_price`, campos extras) e do formato do enunciado (`basePrice`), e datas com e sem fuso. |
+| **Integração** (aplicação completa + MySQL real, simulador falso, relógio fixo) | `WebhookEntryTest`, `WebhookParkedTest`, `WebhookExitTest`, `RevenueControllerTest`, `GarageConfigurationPersistenceAdapterTest`, `LicensePlateColumnTest` | HTTP → serviço → banco, com os códigos 200/400/404 e o corpo das respostas. Cobre a garagem cheia que reabre após uma saída, o faturamento por dia e setor, a carga idempotente e as restrições do schema (sessão ativa única por placa, tamanho das colunas). |
+| **Concorrência** | `ConcurrencyTest` | 20 entradas simultâneas com 5 vagas aceitam exatamente 5, com multiplicadores 0,90/0,90/1,00/1,10/1,25. Também: a mesma placa simultânea gera uma sessão; o mesmo PARKED simultâneo ocupa a vaga uma vez; saídas e entradas simultâneas nunca passam da capacidade. |
+| **Ponta a ponta com o simulador real** | `SimulatorEndToEndTest` | Sobe a imagem `cfontes0estapar/garage-sim:1.0.0` via Testcontainers e a aplicação completa. Carrega a garagem real (30 vagas) e processa os eventos reais até haver saídas, sem nenhum 400 e sem anomalias. Confere que a ocupação das vagas bate com as sessões e que o `GET /revenue` bate com a soma das saídas gravadas. |
+
+### Roteiro de teste manual com o simulador
+
+1. Suba o banco e o simulador:
+
+   ```bash
+   docker compose up -d --wait
+   ./scripts/start-simulator.sh          # ou: .\scripts\start-simulator.ps1
+   ```
+
+2. Suba a aplicação:
+
+   ```bash
+   ./gradlew bootRun
+   ```
+
+   O log deve mostrar `Garagem carregada de http://localhost:3000: 2 setores, 30 vagas, capacidade 30`. Em seguida aparecem os eventos (`Evento recebido no webhook: EntryEvent(...)`, `ParkedEvent(...)`, `ExitEvent(...)`) e o processamento de cada um (`ENTRY ... multiplicador 0.90`, `PARKED ... na vaga 6 do setor A`, `EXIT ... valor R$ 0.00`).
+
+3. Acompanhe o estado no banco (horários em UTC):
+
+   ```bash
+   docker exec parking-mysql mysql -uparking -pparking parking -e "select status, count(*) from parking_session group by status; select count(*) vagas_ocupadas from spot where occupied; select * from anomaly"
+   ```
+
+   O número de vagas ocupadas deve ser igual ao de sessões `PARKED`, e a tabela `anomaly` deve continuar vazia.
+
+4. Consulte o faturamento:
+
+   ```bash
+   curl "http://localhost:3003/revenue"
+   ```
+
+   Com o simulador, as permanências costumam durar segundos ou poucos minutos, dentro dos 30 minutos grátis, então o valor tende a ser `0.00`.
+
+5. Para ver uma cobrança, simule uma permanência de 2h30 com horários de hoje (troque as datas). Escolha uma vaga livre do setor A (`select id, lat, lng from spot where not occupied and sector_code = 'A'`):
+
+   ```bash
+   curl -H 'Content-Type: application/json' -d '{"license_plate":"TST0001","entry_time":"2026-10-28T12:00:00.000Z","event_type":"ENTRY"}' http://localhost:3003/webhook
+   curl -H 'Content-Type: application/json' -d '{"license_plate":"TST0001","lat":-23.561684,"lng":-46.655981,"event_type":"PARKED"}' http://localhost:3003/webhook
+   curl -H 'Content-Type: application/json' -d '{"license_plate":"TST0001","exit_time":"2026-10-28T14:30:00.000Z","event_type":"EXIT"}' http://localhost:3003/webhook
+   curl "http://localhost:3003/revenue?date=2026-10-28&sector=A"
+   ```
+
+   São 3 horas cobradas × R$ 40,50 × o multiplicador da lotação na entrada. Com menos de 25% de lotação: R$ 109,35.
+
+6. Confira os erros:
+
+   ```bash
+   curl -i "http://localhost:3003/revenue?sector=Z"           # 404
+   curl -i "http://localhost:3003/revenue?date=28-10-2026"    # 400
+   curl -i -H 'Content-Type: application/json' -d '{"license_plate":"X","event_type":"ENTRY"}' http://localhost:3003/webhook   # 400 entry_time
+   ```
+
+7. Para recomeçar do zero:
+
+   ```bash
+   docker rm -f garage-sim
+   docker compose down -v
+   ```
+
 ## Decisões de interpretação
 
 Esta seção é preenchida conforme as histórias são implementadas.
@@ -411,6 +489,8 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | Retry com laço simples, falha na subida | São 5 tentativas com 5 s de intervalo, configuráveis. O laço explícito é fácil de ler e testar, sem dependência extra. Sem garagem não há como processar eventos, então a aplicação não sobe e loga URL e causa raiz. | `spring-retry`, ou subir sem garagem e falhar a cada evento. |
 | Sem transação durante a chamada HTTP | O serviço de carga busca a configuração fora de transação. Só a gravação é transacional, no adapter de persistência, para que uma resposta lenta do simulador não segure conexão do banco. | `@Transactional` em todo o caso de uso. |
 | Timeouts no cliente HTTP | Uma tentativa não pode ficar pendurada indefinidamente: o padrão é 2 s para conectar e 5 s para ler. | Timeouts infinitos do cliente HTTP padrão. |
+| Concorrência testada nos casos de uso, com threads reais | Chamar os casos de uso direto, sem HTTP, isola o que está sendo provado: transação, lock e banco. Um `CountDownLatch` solta todas as threads ao mesmo tempo para maximizar a disputa. | Teste de carga externo, mais lento e menos determinístico. |
+| Teste ponta a ponta com o simulador real via Testcontainers | Prova que o contrato real do simulador (formatos, ordem dos eventos, porta) funciona com a aplicação inteira, sem depender de alguém subir o simulador à mão. O simulador não tem semente fixa, por isso o teste verifica **invariantes** (nenhum 400, nenhuma anomalia, vagas ocupadas = sessões PARKED, receita = soma das saídas), e não valores exatos. | Só teste manual com o simulador. |
 | Simulador falso nos testes de integração | Os testes de integração substituem só a busca no simulador (`@Primary`) e usam o resto da aplicação real, inclusive MySQL. O cliente HTTP é testado à parte com `MockRestServiceServer` e o JSON real capturado do simulador. | Depender do simulador rodando para executar os testes. |
 | Lotação da garagem inteira, não do setor | O enunciado diz que há um único grupo de cancelas na entrada e que os setores são divisões lógicas. A cancela não sabe para qual setor o carro vai, então só pode fechar quando a garagem toda está cheia. | Lotação por setor, que bloquearia entradas com vagas livres em outro setor. |
 | Lotação medida antes da entrada do carro | O preço é cobrado de quem entra pela situação que encontrou. Assim, o carro que leva a garagem a 25% ainda paga −10%, e com 99 de 100 vagas ocupadas o último carro entra. | Contar o próprio carro, o que deslocaria as faixas em um carro e impediria ocupar a última vaga. |
