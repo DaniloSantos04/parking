@@ -139,26 +139,31 @@ Qualquer propriedade pode ser sobrescrita na linha de comando, por exemplo `--es
 O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de regras não conhece HTTP, JSON nem JPA. Ele se comunica com o mundo por interfaces (ports), e as tecnologias ficam nas pontas (adapters).
 
 ```
-                 ┌──────────────────────── application ────────────────────────┐
-  adapter/in     │  port/in (casos de uso)        service        port/out      │     adapter/out
- ─────────────   │  ─────────────────────        ─────────      ──────────────  │   ───────────────
-  startup   ───▶ │  LoadGarageUseCase   ◀──── GarageSetupService ───▶ Fetch... ─┼──▶ simulator (HTTP)
-  (runner)       │                                     │            Save...  ─┼──▶ persistence (JPA)
-                 │                                     ▼                       │
-                 │                            domain (modelo puro)             │
-                 └─────────────────────────────────────────────────────────────┘
+                  ┌──────────────────────────── application ─────────────────────────────┐
+  adapter/in      │  port/in (casos de uso)          service             port/out          │   adapter/out
+ ──────────────   │  ─────────────────────          ─────────           ─────────────      │  ──────────────
+  startup    ───▶ │  LoadGarageUseCase      ◀── GarageSetupService ──▶ FetchGarage...    ──┼─▶ simulator (HTTP)
+  (runner)        │                                                    SaveGarage...     ──┼─▶ persistence (JPA)
+  web        ───▶ │  RegisterEntryUseCase   ◀── EntryService ────────▶ LockGaragePort    ──┼─▶ persistence (JPA)
+  (webhook)       │                                  │                 SessionPort       ──┼─▶ persistence (JPA)
+                  │                                  │                 AnomalyPort       ──┼─▶ persistence (JPA)
+                  │                                  ▼                                     │
+                  │                     domain (modelo e regras puras)                     │
+                  └────────────────────────────────────────────────────────────────────────┘
 ```
 
 | Pacote | Responsabilidade |
 |---|---|
-| `domain.model` | Modelo puro, sem Spring, JPA ou Jackson: `Sector`, `Spot`, `Coordinates`, `GarageConfiguration`. As invariantes ficam nos construtores. |
-| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`). |
-| `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`). Interfaces pequenas e específicas. |
-| `application.service` | Implementação dos casos de uso, orquestrando domínio e ports de saída. |
+| `domain.model` | Modelo puro, sem Spring, JPA ou Jackson: `Sector`, `Spot`, `Coordinates`, `GarageConfiguration`, `ParkingSession`, `Anomaly`, `LicensePlate`. As invariantes ficam nos construtores. |
+| `domain.pricing` | Regras de preço: `PricingPolicy`/`OccupancyPricingPolicy`, `Occupancy` e `FeeCalculator`. |
+| `application.port.in` | Casos de uso que a aplicação oferece (`LoadGarageUseCase`, `RegisterEntryUseCase`) e seus comandos (records). |
+| `application.port.out` | O que a aplicação precisa de fora (`FetchGarageConfigurationPort`, `SaveGarageConfigurationPort`, `LockGaragePort`, `SessionPort`, `AnomalyPort`). Interfaces pequenas e específicas. |
+| `application.service` | Implementação dos casos de uso, orquestrando domínio e ports de saída. É onde ficam as transações. |
 | `adapter.in.startup` | `GarageStartupRunner`: carga inicial com novas tentativas. |
+| `adapter.in.web` | `WebhookController`, DTOs (records), leitura flexível de datas e `ApiExceptionHandler`. |
 | `adapter.out.simulator` | Cliente HTTP do simulador e DTOs do `GET /garage`. |
-| `adapter.out.persistence` | Entidades JPA, repositórios Spring Data e o adapter que grava a configuração. |
-| `config` | Propriedades tipadas (`SimulatorProperties`). |
+| `adapter.out.persistence` | Entidades JPA, repositórios Spring Data e os adapters dos ports de saída. |
+| `config` | Propriedades tipadas (`SimulatorProperties`) e os beans do domínio (`PricingPolicy`, `Clock`). |
 
 **Regras de dependência:**
 - `adapter` depende de `application`, que depende de `domain`. Nunca o contrário.
@@ -173,6 +178,66 @@ O projeto segue a **arquitetura hexagonal** (ports and adapters). O núcleo de r
 | `garage` | `id`, `capacity` | Linha única (`CHECK id = 1`), criada pela própria migration. É o alvo do lock pessimista que serializa os eventos e guarda a capacidade total. |
 | `sector` | `code`, `base_price DECIMAL(10,2)`, `max_capacity` | PK no código do setor. `DECIMAL` para dinheiro, nunca ponto flutuante. |
 | `spot` | `id`, `sector_code`, `lat`, `lng` (`DECIMAL(9,6)`), `occupied` | PK no id do simulador. FK para `sector`. `UNIQUE (lat, lng)`, porque o evento PARKED identifica a vaga só pelas coordenadas, e o índice único garante a busca exata e rápida. |
+| `parking_session` | `license_plate`, `status`, `entry_time`, `price_multiplier`, e depois `spot_id`, `sector_code`, `base_price`, `exit_time`, `amount` | Uma linha por permanência. `CHECK` nos status válidos. A coluna gerada `active_plate` (a placa enquanto a sessão não terminou, `NULL` depois) tem índice único: o **banco** garante no máximo uma sessão ativa por placa. Índice em `status` para contar a lotação, e em `(status, exit_time, sector_code)` para o faturamento. |
+| `anomaly` | `type`, `license_plate`, `detail`, `occurred_at` | Eventos que não puderam ser aplicados. Índice em `(type, occurred_at)` para auditoria. |
+
+## API
+
+### `POST /webhook`
+
+Recebe os eventos do simulador. O tipo é escolhido pelo campo `event_type`.
+
+**ENTRY**: um veículo passou pela cancela.
+
+```json
+{
+  "license_plate": "ZUL0001",
+  "entry_time": "2025-01-01T12:00:00.000Z",
+  "event_type": "ENTRY"
+}
+```
+
+**Datas.** São aceitas com fuso (`2025-01-01T12:00:00.000Z`, como no enunciado, ou `2025-01-01T09:00:00-03:00`) e sem fuso (`2025-01-01T12:00:00`, como o simulador envia). Datas sem fuso são lidas como UTC.
+
+**Placa.** Normalizada (sem espaços nas pontas, em maiúsculas). Obrigatória, com até 20 caracteres.
+
+| Situação | HTTP | Efeito |
+|---|---|---|
+| Evento válido e aplicado | 200 | Sessão criada ou atualizada |
+| Evento válido recusado pela regra de negócio (garagem cheia, placa já dentro...) | 200 | Nada muda; anomalia registrada |
+| JSON malformado, campo ausente ou inválido, `event_type` desconhecido | 400 | Corpo `application/problem+json` (RFC 9457) com o campo a corrigir |
+
+Exemplo de 400:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "Campo ausente ou inválido: entry_time",
+  "instance": "/webhook"
+}
+```
+
+### Eventos e anomalias
+
+| Evento | Situação | Comportamento | Anomalia |
+|---|---|---|---|
+| ENTRY | Garagem com vaga | Cria sessão `ENTERED` com o multiplicador da lotação antes da entrada | — |
+| ENTRY | Garagem 100% ocupada | Recusa a entrada | `GARAGE_FULL` |
+| ENTRY | Placa já tem sessão ativa | Ignora o evento; a sessão existente não muda | `DUPLICATE_ENTRY` |
+
+Cada anomalia é logada em `WARN` e gravada na tabela `anomaly`:
+
+```bash
+docker exec parking-mysql mysql -uparking -pparking parking -e "select * from anomaly order by id desc limit 20"
+```
+
+### Concorrência
+
+Todo evento que muda a lotação roda numa transação que começa com `SELECT ... FOR UPDATE` na linha única da `garage` (`LockGaragePort`). Com isso, contar as sessões ativas, decidir o preço e gravar a sessão acontece de forma serializada: duas entradas simultâneas nunca enxergam a mesma vaga livre. Como segunda barreira, o índice único em `active_plate` impede duas sessões ativas da mesma placa mesmo se o código falhar.
+
+O custo é serializar os eventos da garagem. Para o volume de uma garagem (um evento a cada poucos segundos, transações de milissegundos), isso é desprezível e mantém a regra simples e correta.
 
 ## Carga inicial da garagem
 
@@ -282,6 +347,16 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | `BigDecimal` para dinheiro | Valores monetários exatos. Com ponto flutuante, R$ 4,10 × 10 vira 41.00000000000001, como mostra o próprio log do simulador. | `Double`. |
 | Saída anterior à entrada é rejeitada pelo cálculo | É dado inconsistente: o domínio não inventa um valor. Quem chama (o processamento do EXIT) decide como registrar a anomalia. | Calcular com duração negativa ou zerar em silêncio. |
 | `FeeCalculator` como `object` | A tarifa é uma função pura e fixa do enunciado, sem estado nem variação prevista. | Interface com implementação, sem necessidade concreta (YAGNI). |
+| Webhook responde 200 para recusas de negócio | O contrato do enunciado define `HTTP 200` para os eventos. Uma garagem cheia ou um ENTRY repetido não são erros do cliente: o evento foi entendido e tratado. Responder 4xx faria o simulador registrar falhas que não existem. | 409 ou 422 para recusas. |
+| Webhook responde 400 para payload malformado | JSON inválido, campo ausente ou `event_type` desconhecido não podem ser processados. 400 sinaliza o problema a quem enviou, sem criar dados inconsistentes. | Responder 200 e descartar em silêncio. |
+| Erros em Problem Details (RFC 9457) | Formato padrão de erro HTTP, já suportado pelo Spring, com `detail` dizendo qual campo corrigir. | Formato de erro próprio. |
+| Datas sem fuso lidas como UTC | O simulador envia `2026-10-27T22:00:24`, sem fuso, e o relógio do container está em UTC: isso foi conferido comparando com o relógio do host. Datas com fuso, como no enunciado, são respeitadas. | Recusar datas sem fuso (quebraria com o simulador real) ou lê-las no fuso de São Paulo (deslocaria tudo em 3 horas). |
+| Placa normalizada (trim e maiúsculas) | A placa identifica o carro entre os eventos. Diferenças de caixa ou espaços não podem criar dois carros. | Comparar a placa exatamente como chegou. |
+| ENTRY repetido é ignorado e a sessão original é mantida | O primeiro ENTRY é o que abriu a cancela. Um segundo ENTRY sem EXIT é evento duplicado ou fora de ordem; sobrescrever mudaria o horário e o preço já travados. | Substituir a sessão pelo ENTRY mais recente. |
+| Uma sessão ativa por placa garantida também no banco | O lock já serializa os eventos. A coluna gerada `active_plate` com índice único é uma segunda barreira, no próprio MySQL, contra duplicidade, que custa uma coluna. | Confiar só na verificação do código. |
+| Lock pessimista na linha da garagem | A decisão de entrada depende de uma contagem (lotação) e de uma escrita (sessão) que precisam ser atômicas. O lock numa linha única é simples, explícito e correto sob concorrência. | Lock otimista com `@Version`, que exigiria novas tentativas no webhook, ou nível de isolamento `SERIALIZABLE` em todas as transações. |
+| Anomalias em tabela própria | O webhook responde 200 mesmo quando recusa um evento, então a recusa precisa ficar visível. Uma tabela consultável permite auditar divergências entre a lotação do sistema e a física. | Só log. |
+| `Clock` injetado | O horário das anomalias (e depois o "dia atual" do faturamento) vem de um `Clock` bean em UTC, o que permite fixar o tempo nos testes. | `Instant.now()` espalhado pelo código. |
 | MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
 
 ## Branches e commits
