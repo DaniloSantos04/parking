@@ -8,11 +8,6 @@ import org.springframework.boot.ApplicationRunner
 import org.springframework.core.NestedExceptionUtils
 import org.springframework.stereotype.Component
 
-/**
- * Carrega a configuração da garagem na subida da aplicação. Tenta [SimulatorProperties.Retry.maxAttempts]
- * vezes, com [SimulatorProperties.Retry.interval] entre as tentativas. Se todas falharem, lança
- * [GarageLoadException] e a aplicação não sobe: sem setores e vagas não há como processar eventos.
- */
 @Component
 class GarageStartupRunner(
     private val loadGarage: LoadGarageUseCase,
@@ -46,7 +41,6 @@ class GarageStartupRunner(
         )
     }
 
-    /** Mensagem da exceção e, quando houver, da causa raiz (falhas de rede costumam ter a mensagem na causa). */
     private fun Throwable.reason(): String {
         val description = "${javaClass.simpleName}: ${message ?: "sem mensagem"}"
         val root = NestedExceptionUtils.getMostSpecificCause(this)

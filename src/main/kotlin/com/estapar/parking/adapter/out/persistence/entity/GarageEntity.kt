@@ -15,7 +15,6 @@ class GarageEntity(
     var capacity: Int,
 ) {
     companion object {
-        /** A garagem é uma linha única, criada pela migration V1. */
         const val SINGLETON_ID = 1
     }
 }

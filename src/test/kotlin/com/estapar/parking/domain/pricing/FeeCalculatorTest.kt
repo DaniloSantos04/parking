@@ -18,16 +18,13 @@ class FeeCalculatorTest {
 
     @ParameterizedTest(name = "permanência {0} → R$ {1}")
     @CsvSource(
-        // Os primeiros 30 minutos são grátis, inclusive o minuto 30.
         "PT0S, 0.00",
         "PT29M59S, 0.00",
         "PT30M, 0.00",
-        // Passou de 30 minutos, cobra desde a primeira hora.
         "PT30M1S, 10.00",
         "PT30M0.001S, 10.00",
         "PT59M, 10.00",
         "PT1H, 10.00",
-        // Hora iniciada é hora cobrada.
         "PT1H0M1S, 20.00",
         "PT1H59M, 20.00",
         "PT2H, 20.00",
@@ -43,12 +40,11 @@ class FeeCalculatorTest {
         "10.00, 1, 0.90, 9.00",
         "10.00, 1, 1.10, 11.00",
         "10.00, 1, 1.25, 12.50",
-        // Valores do simulador: setor A (R$ 40,50) e setor B (R$ 4,10).
         "40.50, 1, 0.90, 36.45",
         "40.50, 1, 1.10, 44.55",
-        "40.50, 1, 1.25, 50.63", // 50,625 → HALF_UP
+        "40.50, 1, 1.25, 50.63",
         "4.10, 1, 0.90, 3.69",
-        "4.10, 3, 1.25, 15.38", // 15,375 → HALF_UP
+        "4.10, 3, 1.25, 15.38",
     )
     fun `aplica o multiplicador travado na entrada e arredonda centavos com HALF_UP`(
         basePrice: String,
@@ -61,13 +57,11 @@ class FeeCalculatorTest {
 
     @Test
     fun `arredonda so o valor final, nao o preco de cada hora`() {
-        // 4,10 × 1,25 = 5,125 por hora. Arredondar por hora daria 5,13 × 3 = 15,39.
         assertEquals(BigDecimal("15.38"), feeFor(Duration.ofHours(3), "4.10", "1.25"))
     }
 
     @Test
     fun `arredonda as horas antes de aplicar o multiplicador`() {
-        // 61 minutos são 2 horas cobradas: 2 × 10,00 × 1,10 = 22,00.
         assertEquals(BigDecimal("22.00"), feeFor(Duration.ofMinutes(61), "10.00", "1.10"))
     }
 

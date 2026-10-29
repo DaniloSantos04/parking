@@ -7,10 +7,6 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.JdbcTemplate
 import kotlin.test.assertEquals
 
-/**
- * O SQL das migrations não consegue referenciar a constante do Kotlin, e o `ddl-auto: validate`
- * do Hibernate não confere tamanho de VARCHAR. Este teste é o que mantém os dois alinhados.
- */
 @IntegrationTest
 class LicensePlateColumnTest(
     @Autowired private val jdbcTemplate: JdbcTemplate,

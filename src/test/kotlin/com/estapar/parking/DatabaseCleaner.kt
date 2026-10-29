@@ -5,10 +5,6 @@ import com.estapar.parking.adapter.out.persistence.repository.ParkingSessionJpaR
 import com.estapar.parking.adapter.out.persistence.repository.SpotJpaRepository
 import org.springframework.stereotype.Component
 
-/**
- * Volta o banco ao estado da subida (garagem carregada, nenhum carro dentro) entre testes de
- * integração, que compartilham o mesmo container.
- */
 @Component
 class DatabaseCleaner(
     private val sessionRepository: ParkingSessionJpaRepository,

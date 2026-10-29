@@ -18,10 +18,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
-/**
- * EXIT ponta a ponta: HTTP → serviço → MySQL. Garagem dos testes: capacidade 5; vagas 1 e 2 no
- * setor A (R$ 10,00), 3 a 5 no setor B (R$ 4,10).
- */
 @IntegrationTest
 class WebhookExitTest(
     @Autowired mockMvc: MockMvc,
@@ -50,7 +46,6 @@ class WebhookExitTest(
         assertEquals(SessionStatus.EXITED, session.status)
         assertEquals(Instant.parse("2025-01-01T14:30:00Z"), session.exitTime)
         assertEquals("B", session.sectorCode)
-        // Garagem vazia na entrada (0,90); 2h30 = 3 horas cobradas × R$ 4,10 × 0,90 = 11,07.
         assertEquals(BigDecimal("11.07"), session.amount)
         assertFalse(spotRepository.findById(3).orElseThrow().occupied)
         assertEquals(emptyList(), anomalyTypes())
@@ -76,7 +71,6 @@ class WebhookExitTest(
 
         val session = sessions("SKX77845").single()
         assertEquals(Instant.parse("2026-10-27T23:00:25Z"), session.exitTime)
-        // 1h e 1s = 2 horas × R$ 10,00 × 0,90.
         assertEquals(BigDecimal("18.00"), session.amount)
     }
 
@@ -91,7 +85,6 @@ class WebhookExitTest(
 
         val reentered = sessions("CAR0006").single()
         assertEquals(SessionStatus.ENTERED, reentered.status)
-        // Lotação antes da entrada: 4 de 5 (80%) → +25%.
         assertEquals(BigDecimal("1.25"), reentered.priceMultiplier)
     }
 
@@ -115,7 +108,6 @@ class WebhookExitTest(
         assertEquals(SessionStatus.EXITED, session.status)
         assertNull(session.sectorCode)
         assertEquals(BigDecimal("4.10"), session.basePrice)
-        // 1 hora × menor preço-base (R$ 4,10) × 0,90.
         assertEquals(BigDecimal("3.69"), session.amount)
         assertEquals(listOf(AnomalyType.EXIT_WITHOUT_PARKED), anomalyTypes())
     }

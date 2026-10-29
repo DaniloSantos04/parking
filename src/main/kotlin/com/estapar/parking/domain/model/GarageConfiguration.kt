@@ -1,11 +1,5 @@
 package com.estapar.parking.domain.model
 
-/**
- * Configuração da garagem fornecida pelo simulador: setores e vagas.
- *
- * A capacidade da garagem é a soma das capacidades dos setores. A lotação é controlada
- * para a garagem inteira, porque as cancelas ficam na entrada e os setores são só lógicos.
- */
 data class GarageConfiguration(
     val sectors: List<Sector>,
     val spots: List<Spot>,

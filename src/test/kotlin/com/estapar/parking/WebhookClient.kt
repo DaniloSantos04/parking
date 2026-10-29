@@ -5,7 +5,6 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.ResultActionsDsl
 import org.springframework.test.web.servlet.post
 
-/** Envia eventos ao POST /webhook nos testes de integração, no formato do enunciado. */
 class WebhookClient(private val mockMvc: MockMvc) {
 
     fun post(body: String): ResultActionsDsl = mockMvc.post("/webhook") {

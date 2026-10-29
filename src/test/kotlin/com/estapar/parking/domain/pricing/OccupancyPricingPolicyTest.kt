@@ -13,7 +13,6 @@ class OccupancyPricingPolicyTest {
 
     @ParameterizedTest(name = "{0} de {1} vagas ocupadas antes da entrada → multiplicador {2}")
     @CsvSource(
-        // Garagem de 100 vagas: limites exatos de cada faixa.
         "0, 100, 0.90",
         "24, 100, 0.90",
         "25, 100, 1.00",
@@ -22,15 +21,13 @@ class OccupancyPricingPolicyTest {
         "75, 100, 1.10",
         "76, 100, 1.25",
         "99, 100, 1.25",
-        // Garagem do simulador (30 vagas): os limites caem entre números inteiros de carros.
-        "7, 30, 0.90", // 23,3%
-        "8, 30, 1.00", // 26,7%
-        "15, 30, 1.00", // 50%
-        "16, 30, 1.10", // 53,3%
-        "22, 30, 1.10", // 73,3%
-        "23, 30, 1.25", // 76,7%
-        "29, 30, 1.25", // 96,7%
-        // Garagem de 4 vagas: 1 carro é exatamente 25%, 2 é 50% e 3 é 75%.
+        "7, 30, 0.90",
+        "8, 30, 1.00",
+        "15, 30, 1.00",
+        "16, 30, 1.10",
+        "22, 30, 1.10",
+        "23, 30, 1.25",
+        "29, 30, 1.25",
         "1, 4, 1.00",
         "2, 4, 1.00",
         "3, 4, 1.10",

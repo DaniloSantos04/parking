@@ -2,7 +2,6 @@ package com.estapar.parking.domain.model
 
 import java.math.BigDecimal
 
-/** Divisão lógica da garagem, com preço-base por hora e quantidade de vagas. */
 data class Sector(
     val code: String,
     val basePrice: BigDecimal,

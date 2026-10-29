@@ -23,10 +23,6 @@ class EntryService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /**
-     * O lock da garagem vem primeiro: a contagem da lotação e a criação da sessão acontecem sem
-     * que outra entrada concorrente veja a mesma vaga livre.
-     */
     @Transactional
     override fun registerEntry(command: EntryCommand) {
         val capacity = lockGarage.lockAndGetCapacity()

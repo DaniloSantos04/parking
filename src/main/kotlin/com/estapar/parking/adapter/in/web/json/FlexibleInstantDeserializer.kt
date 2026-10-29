@@ -11,11 +11,6 @@ import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeFormatterBuilder
 import java.time.format.DateTimeParseException
 
-/**
- * Lê datas ISO-8601 com ou sem fuso:
- * - `2025-01-01T12:00:00.000Z` (exemplo do enunciado) é lido com o fuso informado;
- * - `2025-01-01T12:00:00` (formato real do simulador) é interpretado como UTC, o relógio do simulador.
- */
 class FlexibleInstantDeserializer : StdDeserializer<Instant>(Instant::class.java) {
 
     override fun deserialize(parser: JsonParser, context: DeserializationContext): Instant {

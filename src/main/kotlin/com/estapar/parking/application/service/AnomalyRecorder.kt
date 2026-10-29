@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.time.Clock
 
-/** Registra uma anomalia no log e no banco, com o horário do relógio da aplicação. */
 @Component
 class AnomalyRecorder(
     private val anomalyPort: AnomalyPort,

@@ -12,7 +12,6 @@ class GarageLockPersistenceAdapter(
     private val garageRepository: GarageJpaRepository,
 ) : LockGaragePort {
 
-    /** Exige uma transação aberta pelo chamador: fora dela o lock seria liberado na mesma hora. */
     @Transactional(propagation = Propagation.MANDATORY)
     override fun lockAndGetCapacity(): Int =
         garageRepository.findByIdForUpdate(GarageEntity.SINGLETON_ID)?.capacity

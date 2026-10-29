@@ -3,7 +3,6 @@ package com.estapar.parking.config
 import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
 
-/** Endereço do simulador e política de novas tentativas da carga inicial da garagem. */
 @JvmRecord
 @ConfigurationProperties("estapar.simulator")
 data class SimulatorProperties(

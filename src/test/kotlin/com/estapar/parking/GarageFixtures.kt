@@ -6,7 +6,6 @@ import com.estapar.parking.domain.model.Sector
 import com.estapar.parking.domain.model.Spot
 import java.math.BigDecimal
 
-/** Garagem pequena usada nos testes: setor A com 2 vagas e setor B com 3, capacidade 5. */
 object GarageFixtures {
 
     val SECTOR_A = Sector(code = "A", basePrice = BigDecimal("10.00"), maxCapacity = 2)

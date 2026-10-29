@@ -23,7 +23,6 @@ class RevenueServiceTest {
     private val revenuePort = mockk<RevenuePort>()
     private val sectors = mockk<SectorPort>()
 
-    /** 2 de janeiro de 2025, 09:00 em São Paulo (UTC−3). */
     private val now = Instant.parse("2025-01-02T12:00:00Z")
     private val service = RevenueService(revenuePort, sectors, Clock.fixed(now, ZoneOffset.UTC))
 
@@ -52,7 +51,6 @@ class RevenueServiceTest {
 
     @Test
     fun `o dia atual e o de Sao Paulo, nao o de UTC`() {
-        // 01:00 UTC de 2 de janeiro ainda é 22:00 de 1º de janeiro em São Paulo.
         val lateEvening = Instant.parse("2025-01-02T01:00:00Z")
         val service = RevenueService(revenuePort, sectors, Clock.fixed(lateEvening, ZoneOffset.UTC))
 
