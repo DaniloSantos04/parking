@@ -9,7 +9,11 @@ O sistema:
 - calcula o valor de cada permanência com preço dinâmico conforme a lotação;
 - expõe a receita do dia por setor em `GET /revenue`.
 
-> Este README cresce junto com o código: cada branch atualiza a seção que lhe cabe. As decisões de interpretação, com justificativa, ficam reunidas na seção [Decisões de interpretação](#decisões-de-interpretação).
+**Para quem avalia:**
+- O código segue a [arquitetura hexagonal](#arquitetura).
+- Cada ponto em aberto do enunciado tem uma decisão justificada em [Decisões de interpretação](#decisões-de-interpretação).
+- Cada requisito aponta para a implementação e os testes em [Rastreabilidade dos requisitos](#rastreabilidade-dos-requisitos).
+- O comportamento real do simulador, que difere do exemplo do enunciado em alguns formatos, está em [Comportamento observado do simulador](#comportamento-observado-do-simulador).
 
 ## Stack
 
@@ -22,7 +26,8 @@ O sistema:
 | Banco | MySQL 8.4 (docker-compose) |
 | Migrations | Flyway 11.20 |
 | Persistência | Spring Data JPA (Hibernate) |
-| Testes | JUnit 5, MockK (springmockk), Testcontainers com MySQL real |
+| Testes | JUnit 5, MockK (springmockk), Testcontainers (MySQL e simulador reais) |
+| Arquitetura | Hexagonal (ports and adapters) |
 
 ## Pré-requisitos
 
@@ -43,12 +48,17 @@ O sistema:
 ## Como executar
 
 ```bash
-docker compose up -d --wait   # sobe o MySQL e espera o healthcheck
-./gradlew test                # roda os testes (Testcontainers sobe o próprio MySQL)
-./gradlew bootRun             # sobe a aplicação na porta 3003
+docker compose up -d --wait      # 1. MySQL, esperando o healthcheck
+./scripts/start-simulator.sh     # 2. simulador (no PowerShell: .\scripts\start-simulator.ps1)
+./gradlew bootRun                # 3. aplicação na porta 3003
+curl http://localhost:3003/revenue
 ```
 
-A aplicação escuta na porta **3003**, porque o simulador envia os eventos para `http://localhost:3003/webhook`.
+```bash
+./gradlew test                   # testes (o Testcontainers sobe o próprio MySQL e o simulador)
+```
+
+A aplicação escuta na porta **3003**, porque o simulador envia os eventos para `http://localhost:3003/webhook`. A ordem importa: a aplicação chama `GET /garage` ao subir, então o simulador precisa estar no ar antes. O [roteiro de teste manual](#roteiro-de-teste-manual-com-o-simulador) detalha cada passo.
 
 ### Banco de dados
 
@@ -462,7 +472,107 @@ São 171 testes, que levam cerca de 2 minutos. Exigem o Docker rodando: o Testco
 
 ## Decisões de interpretação
 
-Esta seção é preenchida conforme as histórias são implementadas.
+O enunciado deixa pontos em aberto, e o simulador real difere do exemplo em alguns formatos. Cada decisão abaixo traz a justificativa e a alternativa descartada, agrupada por tema.
+
+### Lotação e preço dinâmico
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
+| Lotação da garagem inteira, não do setor | O enunciado diz que há um único grupo de cancelas na entrada e que os setores são divisões lógicas. A cancela não sabe para qual setor o carro vai, então só pode fechar quando a garagem toda está cheia. | Lotação por setor, que bloquearia entradas com vagas livres em outro setor. |
+| "Ao entrar, marque uma vaga como ocupada": a vaga é contada no ENTRY e fixada no PARKED | O ENTRY não traz coordenadas nem setor, então ainda não se sabe qual vaga física o carro vai usar. A vaga é reservada na **lotação**: a sessão `ENTERED` já conta como ocupada e a cancela fecha quando a soma chega à capacidade. A vaga **física** (`spot.occupied`) é marcada no PARKED, quando as coordenadas chegam. | Escolher uma vaga arbitrária no ENTRY, que quase sempre divergiria da vaga real informada no PARKED. |
+| Capacidade da garagem = soma do `max_capacity` dos setores | O enunciado define a capacidade por setor. Como a lotação é da garagem inteira, a capacidade total é a soma. No simulador, ela é igual ao número de vagas listadas (30). | Contar as vagas listadas, o que ignoraria o `max_capacity` declarado. |
+| Lotação medida antes da entrada do carro | O preço é cobrado de quem entra pela situação que encontrou. Assim, o carro que leva a garagem a 25% ainda paga −10%, e com 99 de 100 vagas ocupadas o último carro entra. | Contar o próprio carro, o que deslocaria as faixas em um carro e impediria ocupar a última vaga. |
+| Preço travado no ENTRY | O enunciado liga o ajuste à lotação, e o momento coerente é o da entrada, quando a cancela decide. O multiplicador fica gravado na sessão e não muda com a lotação até a saída. | Recalcular na saída pela lotação daquele momento, o que torna o preço imprevisível para o cliente. |
+| Limites das faixas: `< 25%`, `≤ 50%`, `≤ 75%`, `< 100%` | O enunciado diz "menor que 25%" e "menor até 50%/75%/100%". Isso foi lido como 25% exatos já fora do desconto, e 50% e 75% exatos ainda na faixa de baixo. 100% fecha a garagem. Os testes cobrem cada limite (24, 25, 50, 51, 75, 76, 99 e 100 de 100). | Outras leituras de "menor até", que movem os limites em um carro. |
+| Comparação de lotação com aritmética inteira | `ocupados × 100 < capacidade × 25` é exato. Dividir antes (por exemplo 7/30 = 0,2333…) introduziria arredondamento justamente nos limites. | Calcular a porcentagem em `Double`. |
+| Garagem reabre na primeira saída | "Só permitir mais carros com a saída de algum veículo": o EXIT encerra a sessão e libera a vaga na mesma transação, então o próximo ENTRY já vê a lotação abaixo de 100%. | Esperar uma reabertura explícita. |
+
+### Tarifa
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
+| 30 minutos grátis, inclusive | O enunciado diz "primeiros 30 minutos são grátis". Exatamente 30 minutos ainda está dentro dos primeiros 30, então a cobrança começa no primeiro instante depois deles (30 min e 1 ms já paga). | Cobrar a partir de 30 minutos exatos. |
+| Primeira hora cobrada inteira | O enunciado diz "inclusive a primeira hora". Quem passa dos 30 minutos paga a primeira hora cheia, sem descontar os 30 minutos grátis. | Descontar os 30 minutos e cobrar só o excedente. |
+| Hora iniciada é hora cobrada, com precisão de milissegundos | "Arredonde para cima" aplicado à duração exata: 1 h e 1 s são 2 horas. As datas do simulador têm segundos, as do enunciado têm milissegundos, e o cálculo trata ambas sem truncar para minutos. | Arredondar por minutos inteiros, o que perde segundos. |
+| Horas arredondadas antes do multiplicador | O ajuste dinâmico incide sobre o preço da permanência cobrada. Arredondar a duração primeiro mantém a regra "hora cheia" independente do ajuste. | Aplicar o multiplicador à duração fracionária. |
+| Arredondamento só no valor final, `HALF_UP` | Evita acumular erro de arredondamento por hora (3 h × R$ 4,10 × 1,25 dá R$ 15,38, não R$ 15,39). `HALF_UP` é o arredondamento comercial usual. | Arredondar o preço de cada hora, ou `HALF_EVEN`. |
+| `BigDecimal` para dinheiro | Valores monetários exatos. Com ponto flutuante, R$ 4,10 × 10 vira 41.00000000000001, como mostra o próprio log do simulador. | `Double`. |
+| Sessão sem PARKED é cobrada pelo menor preço-base da garagem | O carro passou pela cancela e ocupou lugar na garagem, então a permanência é cobrada normalmente. Sem PARKED não há setor, e por isso o preço-base é o menor da garagem (favorável ao cliente, já que não se sabe onde ele parou). A receita fica sem setor: entra no total, não no de nenhum setor. O preço-base usado fica gravado na sessão e o caso vira anomalia. | Não cobrar, ou cobrar pelo maior preço-base. |
+| Saída anterior à entrada encerra com R$ 0,00 | O carro saiu (o evento diz isso), então a sessão precisa ser encerrada para liberar a vaga e a lotação. Mas uma duração negativa não tem valor a cobrar: a cobrança é zero e o caso vira `EXIT_BEFORE_ENTRY` para auditoria. O `exit_time` é gravado como recebido. O próprio `FeeCalculator` rejeita duração negativa, então nenhum valor é inventado por engano: quem decide o tratamento é a transição de saída. | Ignorar o EXIT e deixar o carro "preso" na lotação, trocar os horários, ou calcular com duração negativa. |
+
+### Eventos do webhook
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
+| Webhook responde 200 para recusas de negócio | O contrato do enunciado define `HTTP 200` para os eventos. Uma garagem cheia ou um ENTRY repetido não são erros do cliente: o evento foi entendido e tratado. Responder 4xx faria o simulador registrar falhas que não existem. | 409 ou 422 para recusas. |
+| Webhook responde 400 para payload malformado | JSON inválido, campo ausente ou `event_type` desconhecido não podem ser processados. 400 sinaliza o problema a quem enviou, sem criar dados inconsistentes. | Responder 200 e descartar em silêncio. |
+| Erros em Problem Details (RFC 9457) | Formato padrão de erro HTTP, já suportado pelo Spring, com `detail` dizendo qual campo corrigir. | Formato de erro próprio. |
+| Anomalias em tabela própria | O webhook responde 200 mesmo quando recusa um evento, então a recusa precisa ficar visível. Uma tabela consultável permite auditar divergências entre a lotação do sistema e a física. | Só log. |
+| Datas sem fuso lidas como UTC | O simulador envia `2026-10-27T22:00:24`, sem fuso, e o relógio do container está em UTC: isso foi conferido comparando com o relógio do host. Datas com fuso, como no enunciado, são respeitadas. | Recusar datas sem fuso (quebraria com o simulador real) ou lê-las no fuso de São Paulo (deslocaria tudo em 3 horas). |
+| Placa normalizada (trim e maiúsculas), até 20 caracteres | A placa identifica o carro entre os eventos. Diferenças de caixa ou espaços não podem criar dois carros. O limite (`LicensePlate.MAX_LENGTH`) é o mesmo das colunas do banco, e um teste confere que eles batem. Placa maior responde 400 em vez de estourar no `INSERT`. | Comparar a placa exatamente como chegou, ou deixar o banco rejeitar com 500. |
+| ENTRY repetido é ignorado e a sessão original é mantida | O primeiro ENTRY é o que abriu a cancela. Um segundo ENTRY sem EXIT é evento duplicado ou fora de ordem; sobrescrever mudaria o horário e o preço já travados. | Substituir a sessão pelo ENTRY mais recente. |
+| Vaga identificada pelas coordenadas exatas | O PARKED só traz lat/lng. Com a normalização para 6 casas no domínio e o índice único `(lat, lng)`, a busca é por igualdade, e o simulador envia exatamente as coordenadas do `GET /garage`, como foi verificado. | Buscar a vaga mais próxima por distância, o que mascararia coordenadas erradas. |
+| Setor e preço-base definidos no PARKED | O ENTRY não diz para qual setor o carro vai. O setor só é conhecido quando ele estaciona, e é dele que vem o `basePrice` usado na saída. O multiplicador continua o travado no ENTRY. | Definir o setor no ENTRY, o que é impossível sem coordenadas. |
+| Vaga ocupada é anomalia e nada muda | Se a vaga já tem outro carro, não há como saber qual dos dois eventos está errado. Manter o estado e registrar a anomalia não corrompe o dado existente e deixa a divergência visível. | Mover o outro carro, ou aceitar duas sessões na mesma vaga. |
+| PARKED repetido é anomalia separada (`ALREADY_PARKED`) | Distingue "carro que nunca entrou" (`PARKED_WITHOUT_ENTRY`) de "carro já estacionado que mandou PARKED de novo", o que facilita a auditoria. A vaga original é mantida pelo mesmo motivo do ENTRY repetido. | Um único tipo para os dois casos, ou trocar de vaga. |
+| Coordenadas fora da faixa geográfica respondem 400 | Latitude fora de −90..90 ou longitude fora de −180..180 não é uma posição: é payload inválido, não uma anomalia de negócio. | Tratar como `SPOT_NOT_FOUND`. |
+| EXIT repetido não cobra de novo | Depois do primeiro EXIT a sessão está encerrada, então um segundo EXIT da mesma placa não encontra sessão ativa: é ignorado e vira `EXIT_WITHOUT_ACTIVE_SESSION`. O valor e o horário da primeira saída ficam como estão. | Recalcular o valor com o horário do último EXIT. |
+| A placa pode entrar de novo depois de sair | A unicidade é só de sessão **ativa** (`active_plate` vira `NULL` no EXIT). O histórico de permanências da placa fica preservado, uma linha por visita. | Reaproveitar a mesma linha a cada visita, o que apagaria o histórico do faturamento. |
+| Log de todos os eventos recebidos | Cada evento aceito é logado em `INFO` e cada payload rejeitado em `WARN`, com o motivo, para que todo evento que chega ao webhook deixe rastro. | Logar só as anomalias. |
+
+### Concorrência e consistência
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
+| Lock pessimista na linha única da garagem, em ENTRY, PARKED e EXIT | A decisão de entrada depende de uma contagem (lotação) e de uma escrita (sessão) que precisam ser atômicas. O PARKED precisa checar e ocupar a vaga sem disputa, e o EXIT precisa encerrar a sessão e liberar a vaga juntos. Um único lock, sempre o primeiro da transação, serializa tudo sem risco de deadlock. | Lock otimista com `@Version`, que exigiria novas tentativas no webhook; nível `SERIALIZABLE` em todas as transações; ou locks por vaga, que exigiriam ordenar locks entre garagem e vaga. |
+| Garagem como linha única na tabela `garage` | Dá um ponto único para o lock e guarda a capacidade sem recalcular a soma a cada entrada. A linha nasce na migration, então o lock nunca encontra a tabela vazia. | `LOCK TABLES`, ou recalcular a capacidade a cada evento. |
+| Uma sessão ativa por placa garantida também no banco | O lock já serializa os eventos. A coluna gerada `active_plate` com índice único é uma segunda barreira, no próprio MySQL, contra duplicidade, que custa uma coluna. | Confiar só na verificação do código. |
+| `spot.occupied` gravado na vaga | A pergunta "esta vaga está livre?" é respondida direto pela vaga, sob o lock, sem varrer sessões. O EXIT libera a vaga na mesma transação em que encerra a sessão. | Derivar a ocupação das sessões `PARKED` a cada consulta. |
+| Timestamps em UTC | O banco guarda instantes em UTC (`hibernate.jdbc.time_zone` e `connectionTimeZone`). O fuso de São Paulo só é aplicado na hora de definir o "dia" do faturamento. Por isso o cliente MySQL mostra os horários 3 horas à frente de São Paulo. | Gravar no horário local, o que deixa o dado dependente do fuso do servidor e ambíguo se o fuso mudar de regra. |
+
+### Faturamento (`GET /revenue`)
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
+| Parâmetros na query string | O enunciado mostra `date` e `sector` num corpo JSON, mas corpo em `GET` não tem semântica definida (RFC 9110), e proxies e clientes HTTP podem descartá-lo. Query string é o padrão REST para filtros de leitura, funciona em qualquer cliente e pode ir para cache. | Corpo JSON no `GET`, como no exemplo do enunciado. |
+| `date` e `sector` opcionais | Sem `date`, vale o dia atual ("até o momento para o dia atual", como pede o enunciado). Sem `sector`, a receita é da garagem inteira. | Exigir os dois parâmetros. |
+| Receita no dia da **saída**, no fuso de São Paulo | O valor só existe quando o carro sai, e o "dia" de uma garagem em São Paulo é o dia local. Os horários continuam guardados em UTC e só a consulta converte o intervalo. | Dia da entrada, ou dia em UTC (que deslocaria 3 horas do faturamento para o dia seguinte). |
+| "Até o momento" limita o intervalo ao instante atual | O intervalo do dia termina no "agora": uma saída com horário futuro (relógio do simulador adiantado, por exemplo) não entra antes de acontecer. Dias futuros têm receita zero sem consultar o banco. | Somar o dia inteiro, inclusive saídas com horário futuro. |
+| Saídas sem setor só no total | Quem saiu sem PARKED não tem setor. Somar essa receita a um setor qualquer distorceria o faturamento daquele setor. Ela continua no total da garagem. | Atribuir ao setor de menor preço-base. |
+| 404 para setor inexistente, 400 para data inválida | Setor que não existe é recurso não encontrado. Data fora de `AAAA-MM-DD`, ou inexistente como `2025-02-30`, é parâmetro malformado. As duas respostas vêm em Problem Details com `detail` explicando o erro. | Responder 200 com `amount: 0.00`, o que esconderia o erro do cliente. |
+| Setor normalizado; em branco equivale a ausente | `?sector=a` e `?sector=A` são o mesmo setor, como acontece com a placa. `?sector=` vazio é tratado como "sem filtro", porque não identifica nenhum setor. | Diferenciar maiúsculas e minúsculas, ou responder 404 para setor vazio. |
+| `timestamp` é o instante da apuração | O exemplo do enunciado não diz o que o campo representa. O instante em que a receita foi calculada deixa claro até quando o valor "até o momento" vale. Formato fixo `AAAA-MM-DDTHH:mm:ss.SSSZ` em UTC, como no exemplo. | O início do dia consultado. |
+
+### Simulador e carga da garagem
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
+| Simulador com `--network="host"` como padrão e plano B com `-p` | O modo `host` é o comando do enunciado e funciona no Docker Desktop com host networking ligado. O plano B atende quem não pode ligar essa opção, sem mudar nada na aplicação. | Só o comando do enunciado, que não funciona no Docker Desktop padrão. |
+| `CLIENT_WEBHOOK_URL` no plano B | É a variável que o binário do simulador lê de fato, o que foi confirmado com o envio para `host.docker.internal`. A `EXTERNAL_API_URL` declarada na imagem não tem efeito. | `EXTERNAL_API_URL`, que mantém o envio para `localhost:3003` e falha no plano B. |
+| Scripts em Bash e PowerShell | O ambiente de desenvolvimento é Mac ou Windows, e cada sistema roda o seu script sem dependências extras. | Só Bash, que exigiria Git Bash ou WSL no Windows. |
+| Aceitar `base_price` e `basePrice` no `GET /garage` | O simulador real envia `base_price`, e o exemplo do enunciado mostra `basePrice`. Com `@JsonAlias`, a aplicação funciona com os dois sem código condicional. | Aceitar só um formato, o que quebraria com o simulador real ou com o contrato do enunciado. |
+| Ignorar `open_hour`, `close_hour`, `duration_limit_minutes` e `occupied` do `GET /garage` | O enunciado não define regra para horário de funcionamento nem para limite de permanência (YAGNI). A ocupação é estado da aplicação, derivado dos eventos, e não configuração. | Implementar regras que o enunciado não pede. |
+| Validar a configuração no domínio | Setor, id ou coordenada duplicados, ou vaga de setor inexistente, tornariam a lotação e a busca por coordenada ambíguas. Falhar cedo, na subida, é melhor que corromper dados depois. | Confiar no simulador e gravar o que vier. |
+| Coordenadas em `DECIMAL(9,6)`, normalizadas no domínio | O PARKED identifica a vaga só por lat/lng. Com escala fixa e `BigDecimal`, a comparação é por igualdade exata, sem erro de ponto flutuante. | `DOUBLE` com comparação por tolerância. |
+| Carga idempotente por upsert, preservando `occupied` | A aplicação pode reiniciar com carros dentro da garagem. Regravar a configuração não pode apagar o estado de ocupação. | Apagar e recriar setores e vagas a cada subida. |
+| Setores e vagas ausentes numa recarga não são apagados | Eles podem estar referenciados por sessões existentes. Apagar exigiria regras de migração de carros que o enunciado não define. | Remover o que não veio na nova configuração. |
+| Retry com laço simples, falha na subida | São 5 tentativas com 5 s de intervalo, configuráveis. O laço explícito é fácil de ler e testar, sem dependência extra. Sem garagem não há como processar eventos, então a aplicação não sobe e loga URL e causa raiz. | `spring-retry`, ou subir sem garagem e falhar a cada evento. |
+| Sem transação durante a chamada HTTP | O serviço de carga busca a configuração fora de transação. Só a gravação é transacional, no adapter de persistência, para que uma resposta lenta do simulador não segure conexão do banco. | `@Transactional` em todo o caso de uso. |
+| Timeouts no cliente HTTP | Uma tentativa não pode ficar pendurada indefinidamente: o padrão é 2 s para conectar e 5 s para ler. | Timeouts infinitos do cliente HTTP padrão. |
+
+### Arquitetura e código
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
+| Arquitetura hexagonal | Isola as regras de negócio de HTTP, JSON e banco. Cada regra pode ser testada sem infraestrutura, e trocar o simulador ou o banco afeta só um adapter. | Camadas tradicionais (controller → service → repository), em que o serviço depende direto do JPA. |
+| `@Transactional` nos serviços de aplicação | O lock pessimista e as mudanças de estado precisam estar na mesma transação, e o caso de uso é a fronteira natural dela. O domínio continua sem nenhuma dependência de Spring. | Gerenciar transação nos adapters de entrada, o que espalharia a regra de consistência. |
+| DTOs de entrada e saída como records (`@JvmRecord`) | São imutáveis, com igualdade por valor, e compilam como `java.lang.Record`. Deixam explícito que só carregam dados entre camadas. Comandos e resultados dos casos de uso seguem o mesmo padrão. | Classes mutáveis com getters e setters. |
+| `PricingPolicy` como interface no domínio | A regra de preço é a parte do sistema com mais chance de mudar. Os serviços dependem da abstração, e uma nova política entra como nova implementação, sem alterar quem a usa (aberto/fechado e inversão de dependência). | Regra embutida no serviço de entrada. |
+| `FeeCalculator` como `object` | A tarifa é uma função pura e fixa do enunciado, sem estado nem variação prevista. | Interface com implementação, sem necessidade concreta (YAGNI). |
+| Máquina de estados na `ParkingSession` | `park()` e `exit()` validam as transições ENTERED → PARKED → EXITED no próprio domínio. Um serviço não consegue, por engano, estacionar uma sessão encerrada. | Trocar o `status` diretamente nos serviços. |
+| `Clock` injetado | O horário das anomalias e o "agora" do faturamento vêm de um `Clock` bean em UTC. Nos testes de integração, um relógio fixo torna "hoje" e "até o momento" determinísticos. | `Instant.now()` espalhado pelo código. |
+
+### Stack e infraestrutura
 
 | Decisão | Justificativa | Alternativa descartada |
 |---|---|---|
@@ -471,73 +581,61 @@ Esta seção é preenchida conforme as histórias são implementadas.
 | MySQL 8.4 | É a versão LTS atual do MySQL. A 8.0 chegou ao fim do suporte em abril de 2026. | MySQL 8.0. |
 | Flyway 11.20 em vez do 11.7 gerenciado pelo Spring Boot | O Flyway 11.7 avisa que só homologa MySQL até 8.1. A linha 11.20 é a mais recente da mesma versão maior, compatível com a autoconfiguração do Spring Boot 3.5, e suporta o MySQL 8.4. | Manter o 11.7 com o aviso, ou o Flyway 12, que muda de versão maior. |
 | Schema só pelo Flyway, Hibernate em `validate` | Migrations versionadas são auditáveis e reproduzíveis. O `validate` faz a aplicação falhar na subida se as entidades divergirem do schema. | `ddl-auto: update`, que altera o schema de forma implícita. |
-| Timestamps em UTC | O banco guarda instantes em UTC (`hibernate.jdbc.time_zone` e `connectionTimeZone`). O fuso de São Paulo só é aplicado na hora de definir o "dia" do faturamento. | Gravar no horário local, o que deixa o dado dependente do fuso do servidor e ambíguo se o fuso mudar de regra. |
 | `open-in-view: false` | A sessão JPA fica restrita à transação do serviço, sem consultas escondidas na camada web. | O padrão do Spring Boot (`true`), que gera aviso e mantém a conexão aberta durante a resposta. |
+| MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
+
+### Testes
+
+| Decisão | Justificativa | Alternativa descartada |
+|---|---|---|
 | Testcontainers com MySQL real | Os testes de integração rodam no mesmo banco de produção, o que pega diferenças de SQL, de lock e de tipos que o H2 esconderia. | Banco em memória (H2). |
-| Simulador com `--network="host"` como padrão e plano B com `-p` | O modo `host` é o comando do enunciado e funciona no Docker Desktop com host networking ligado. O plano B atende quem não pode ligar essa opção, sem mudar nada na aplicação. | Só o comando do enunciado, que não funciona no Docker Desktop padrão. |
-| `CLIENT_WEBHOOK_URL` no plano B | É a variável que o binário do simulador lê de fato, o que foi confirmado com o envio para `host.docker.internal`. A `EXTERNAL_API_URL` declarada na imagem não tem efeito. | `EXTERNAL_API_URL`, que mantém o envio para `localhost:3003` e falha no plano B. |
-| Scripts em Bash e PowerShell | O ambiente de desenvolvimento é Mac ou Windows, e cada sistema roda o seu script sem dependências extras. | Só Bash, que exigiria Git Bash ou WSL no Windows. |
-| Arquitetura hexagonal | Isola as regras de negócio de HTTP, JSON e banco. Cada regra pode ser testada sem infraestrutura, e trocar o simulador ou o banco afeta só um adapter. | Camadas tradicionais (controller → service → repository), em que o serviço depende direto do JPA. |
-| Aceitar `base_price` e `basePrice` no `GET /garage` | O simulador real envia `base_price`, e o exemplo do enunciado mostra `basePrice`. Com `@JsonAlias`, a aplicação funciona com os dois sem código condicional. | Aceitar só um formato, o que quebraria com o simulador real ou com o contrato do enunciado. |
-| Ignorar `open_hour`, `close_hour`, `duration_limit_minutes` e `occupied` do `GET /garage` | O enunciado não define regra para horário de funcionamento nem para limite de permanência (YAGNI). A ocupação é estado da aplicação, derivado dos eventos, e não configuração. | Implementar regras que o enunciado não pede. |
-| Capacidade da garagem = soma do `max_capacity` dos setores | O enunciado define a capacidade por setor. Como a lotação é controlada para a garagem inteira, a capacidade total é a soma. No simulador, ela é igual ao número de vagas listadas (30). | Contar as vagas listadas, o que ignoraria o `max_capacity` declarado. |
-| Garagem como linha única na tabela `garage` | Dá um ponto único para o lock pessimista (`SELECT ... FOR UPDATE`) que serializa os eventos e guarda a capacidade sem recalcular a soma a cada entrada. A linha nasce na migration, então o lock nunca encontra a tabela vazia. | Lock em tabela (`LOCK TABLES`) ou recalcular a capacidade a cada evento. |
-| Coordenadas em `DECIMAL(9,6)`, normalizadas no domínio | O PARKED identifica a vaga só por lat/lng. Com escala fixa e `BigDecimal`, a comparação é por igualdade exata, sem erro de ponto flutuante. | `DOUBLE` com comparação por tolerância. |
-| Carga idempotente por upsert, preservando `occupied` | A aplicação pode reiniciar com carros dentro da garagem. Regravar a configuração não pode apagar o estado de ocupação. | Apagar e recriar setores e vagas a cada subida. |
-| Setores e vagas ausentes numa recarga não são apagados | Eles podem estar referenciados por sessões existentes. Apagar exigiria regras de migração de carros que o enunciado não define. | Remover o que não veio na nova configuração. |
-| Validar a configuração no domínio | Setor, id ou coordenada duplicados, ou vaga de setor inexistente, tornariam a lotação e a busca por coordenada ambíguas. Falhar cedo, na subida, é melhor que corromper dados depois. | Confiar no simulador e gravar o que vier. |
-| Retry com laço simples, falha na subida | São 5 tentativas com 5 s de intervalo, configuráveis. O laço explícito é fácil de ler e testar, sem dependência extra. Sem garagem não há como processar eventos, então a aplicação não sobe e loga URL e causa raiz. | `spring-retry`, ou subir sem garagem e falhar a cada evento. |
-| Sem transação durante a chamada HTTP | O serviço de carga busca a configuração fora de transação. Só a gravação é transacional, no adapter de persistência, para que uma resposta lenta do simulador não segure conexão do banco. | `@Transactional` em todo o caso de uso. |
-| Timeouts no cliente HTTP | Uma tentativa não pode ficar pendurada indefinidamente: o padrão é 2 s para conectar e 5 s para ler. | Timeouts infinitos do cliente HTTP padrão. |
+| Simulador falso nos testes de integração | Os testes de integração substituem só a busca no simulador (`@Primary`) e usam o resto da aplicação real, inclusive MySQL. O cliente HTTP é testado à parte com `MockRestServiceServer` e o JSON real capturado do simulador. | Depender do simulador rodando para executar os testes. |
 | Concorrência testada nos casos de uso, com threads reais | Chamar os casos de uso direto, sem HTTP, isola o que está sendo provado: transação, lock e banco. Um `CountDownLatch` solta todas as threads ao mesmo tempo para maximizar a disputa. | Teste de carga externo, mais lento e menos determinístico. |
 | Teste ponta a ponta com o simulador real via Testcontainers | Prova que o contrato real do simulador (formatos, ordem dos eventos, porta) funciona com a aplicação inteira, sem depender de alguém subir o simulador à mão. O simulador não tem semente fixa, por isso o teste verifica **invariantes** (nenhum 400, nenhuma anomalia, vagas ocupadas = sessões PARKED, receita = soma das saídas), e não valores exatos. | Só teste manual com o simulador. |
-| Simulador falso nos testes de integração | Os testes de integração substituem só a busca no simulador (`@Primary`) e usam o resto da aplicação real, inclusive MySQL. O cliente HTTP é testado à parte com `MockRestServiceServer` e o JSON real capturado do simulador. | Depender do simulador rodando para executar os testes. |
-| Lotação da garagem inteira, não do setor | O enunciado diz que há um único grupo de cancelas na entrada e que os setores são divisões lógicas. A cancela não sabe para qual setor o carro vai, então só pode fechar quando a garagem toda está cheia. | Lotação por setor, que bloquearia entradas com vagas livres em outro setor. |
-| Lotação medida antes da entrada do carro | O preço é cobrado de quem entra pela situação que encontrou. Assim, o carro que leva a garagem a 25% ainda paga −10%, e com 99 de 100 vagas ocupadas o último carro entra. | Contar o próprio carro, o que deslocaria as faixas em um carro e impediria ocupar a última vaga. |
-| Preço travado no ENTRY | O enunciado liga o ajuste à lotação; o momento coerente é o da entrada, quando a cancela decide. O multiplicador fica gravado na sessão e não muda com a lotação até a saída. | Recalcular na saída pela lotação daquele momento, o que torna o preço imprevisível para o cliente. |
-| Limites das faixas: `< 25%`, `≤ 50%`, `≤ 75%`, `< 100%` | O enunciado diz "menor que 25%" e "menor até 50%/75%/100%". Isso foi lido como 25% exatos já fora do desconto, e 50% e 75% exatos ainda na faixa de baixo. 100% fecha a garagem. Os testes cobrem cada limite (24, 25, 50, 51, 75, 76, 99 e 100 de 100). | Outras leituras de "menor até", que movem os limites em um carro. |
-| Comparação de lotação com aritmética inteira | `ocupados × 100 < capacidade × 25` é exato. Dividir antes (por exemplo 7/30 = 0,2333…) introduziria arredondamento justamente nos limites. | Calcular a porcentagem em `Double`. |
-| `PricingPolicy` como interface no domínio | A regra de preço é a parte do sistema com mais chance de mudar. Os serviços dependem da abstração, e uma nova política entra como nova implementação, sem alterar quem a usa (aberto/fechado e inversão de dependência). | Regra embutida no serviço de entrada. |
-| 30 minutos grátis, inclusive | O enunciado diz "primeiros 30 minutos são grátis". Exatamente 30 minutos ainda está dentro dos primeiros 30, então a cobrança começa no primeiro instante depois deles (30 min e 1 ms já paga). | Cobrar a partir de 30 minutos exatos. |
-| Primeira hora cobrada inteira | O enunciado diz "inclusive a primeira hora". Quem passa dos 30 minutos paga a primeira hora cheia, sem descontar os 30 minutos grátis. | Descontar os 30 minutos e cobrar só o excedente. |
-| Hora iniciada é hora cobrada, com precisão de milissegundos | "Arredonde para cima" aplicado à duração exata: 1 h e 1 s são 2 horas. As datas do simulador têm segundos, as do enunciado têm milissegundos, e o cálculo trata ambas sem truncar para minutos. | Arredondar por minutos inteiros, o que perde segundos. |
-| Horas arredondadas antes do multiplicador | O ajuste dinâmico incide sobre o preço da permanência cobrada. Arredondar a duração primeiro mantém a regra "hora cheia" independente do ajuste. | Aplicar o multiplicador à duração fracionária. |
-| Arredondamento só no valor final, `HALF_UP` | Evita acumular erro de arredondamento por hora (3 h × R$ 4,10 × 1,25 dá R$ 15,38, não R$ 15,39). `HALF_UP` é o arredondamento comercial usual. | Arredondar o preço de cada hora, ou `HALF_EVEN`. |
-| `BigDecimal` para dinheiro | Valores monetários exatos. Com ponto flutuante, R$ 4,10 × 10 vira 41.00000000000001, como mostra o próprio log do simulador. | `Double`. |
-| Saída anterior à entrada é rejeitada pelo cálculo | É dado inconsistente: o domínio não inventa um valor. Quem chama (o processamento do EXIT) decide como registrar a anomalia. | Calcular com duração negativa ou zerar em silêncio. |
-| `FeeCalculator` como `object` | A tarifa é uma função pura e fixa do enunciado, sem estado nem variação prevista. | Interface com implementação, sem necessidade concreta (YAGNI). |
-| Webhook responde 200 para recusas de negócio | O contrato do enunciado define `HTTP 200` para os eventos. Uma garagem cheia ou um ENTRY repetido não são erros do cliente: o evento foi entendido e tratado. Responder 4xx faria o simulador registrar falhas que não existem. | 409 ou 422 para recusas. |
-| Webhook responde 400 para payload malformado | JSON inválido, campo ausente ou `event_type` desconhecido não podem ser processados. 400 sinaliza o problema a quem enviou, sem criar dados inconsistentes. | Responder 200 e descartar em silêncio. |
-| Erros em Problem Details (RFC 9457) | Formato padrão de erro HTTP, já suportado pelo Spring, com `detail` dizendo qual campo corrigir. | Formato de erro próprio. |
-| Datas sem fuso lidas como UTC | O simulador envia `2026-10-27T22:00:24`, sem fuso, e o relógio do container está em UTC: isso foi conferido comparando com o relógio do host. Datas com fuso, como no enunciado, são respeitadas. | Recusar datas sem fuso (quebraria com o simulador real) ou lê-las no fuso de São Paulo (deslocaria tudo em 3 horas). |
-| Placa normalizada (trim e maiúsculas) | A placa identifica o carro entre os eventos. Diferenças de caixa ou espaços não podem criar dois carros. | Comparar a placa exatamente como chegou. |
-| ENTRY repetido é ignorado e a sessão original é mantida | O primeiro ENTRY é o que abriu a cancela. Um segundo ENTRY sem EXIT é evento duplicado ou fora de ordem; sobrescrever mudaria o horário e o preço já travados. | Substituir a sessão pelo ENTRY mais recente. |
-| Uma sessão ativa por placa garantida também no banco | O lock já serializa os eventos. A coluna gerada `active_plate` com índice único é uma segunda barreira, no próprio MySQL, contra duplicidade, que custa uma coluna. | Confiar só na verificação do código. |
-| Lock pessimista na linha da garagem | A decisão de entrada depende de uma contagem (lotação) e de uma escrita (sessão) que precisam ser atômicas. O lock numa linha única é simples, explícito e correto sob concorrência. | Lock otimista com `@Version`, que exigiria novas tentativas no webhook, ou nível de isolamento `SERIALIZABLE` em todas as transações. |
-| Anomalias em tabela própria | O webhook responde 200 mesmo quando recusa um evento, então a recusa precisa ficar visível. Uma tabela consultável permite auditar divergências entre a lotação do sistema e a física. | Só log. |
-| `Clock` injetado | O horário das anomalias e o "agora" do faturamento vêm de um `Clock` bean em UTC. Nos testes de integração, um relógio fixo torna "hoje" e "até o momento" determinísticos. | `Instant.now()` espalhado pelo código. |
-| `GET /revenue` com parâmetros na query string | O enunciado mostra `date` e `sector` num corpo JSON, mas corpo em `GET` não tem semântica definida (RFC 9110), e proxies e clientes HTTP podem descartá-lo. Query string é o padrão REST para filtros de leitura, funciona em qualquer cliente e pode ir para cache. | Corpo JSON no `GET`, como no exemplo do enunciado. |
-| `date` e `sector` opcionais | Sem `date`, vale o dia atual ("até o momento para o dia atual", como pede o enunciado). Sem `sector`, a receita é da garagem inteira. | Exigir os dois parâmetros. |
-| Receita no dia da **saída**, no fuso de São Paulo | O valor só existe quando o carro sai, e o "dia" de uma garagem em São Paulo é o dia local. Os horários continuam guardados em UTC e só a consulta converte o intervalo. | Dia da entrada, ou dia em UTC (que deslocaria 3 horas do faturamento para o dia seguinte). |
-| "Até o momento" limita o intervalo ao instante atual | O enunciado pede a receita "até o momento para o dia atual". O intervalo do dia termina no "agora": uma saída com horário futuro (relógio do simulador adiantado, por exemplo) não entra antes de acontecer. Dias futuros têm receita zero sem consultar o banco. | Somar o dia inteiro, inclusive saídas com horário futuro. |
-| Saídas sem setor só no total | Quem saiu sem PARKED não tem setor. Somar essa receita a um setor qualquer distorceria o faturamento daquele setor. Ela continua no total da garagem. | Atribuir ao setor de menor preço-base. |
-| 404 para setor inexistente, 400 para data inválida | Setor que não existe é recurso não encontrado. Data fora de `AAAA-MM-DD`, ou inexistente como `2025-02-30`, é parâmetro malformado. As duas respostas vêm em Problem Details com `detail` explicando o erro. | Responder 200 com `amount: 0.00`, o que esconderia o erro do cliente. |
-| Setor normalizado; em branco equivale a ausente | `?sector=a` e `?sector=A` são o mesmo setor, como acontece com a placa. `?sector=` vazio é tratado como "sem filtro", porque não identifica nenhum setor. | Diferenciar maiúsculas e minúsculas, ou responder 404 para setor vazio. |
-| `timestamp` é o instante da apuração | O exemplo do enunciado não diz o que o campo representa. O instante em que a receita foi calculada deixa claro até quando o valor "até o momento" vale. Formato fixo `AAAA-MM-DDTHH:mm:ss.SSSZ` em UTC, como no exemplo. | O início do dia consultado. |
-| Vaga identificada pelas coordenadas exatas | O PARKED só traz lat/lng. Com a normalização para 6 casas no domínio e o índice único `(lat, lng)`, a busca é por igualdade, e o simulador envia exatamente as coordenadas do `GET /garage`, como foi verificado. | Buscar a vaga mais próxima por distância, o que mascararia coordenadas erradas. |
-| Setor e preço-base definidos no PARKED | O ENTRY não diz para qual setor o carro vai. O setor só é conhecido quando ele estaciona, e é dele que vem o `basePrice` usado na saída. O multiplicador continua o travado no ENTRY. | Definir o setor no ENTRY, o que é impossível sem coordenadas. |
-| Vaga ocupada é anomalia e nada muda | Se a vaga já tem outro carro, não há como saber qual dos dois eventos está errado. Manter o estado e registrar a anomalia não corrompe o dado existente e deixa a divergência visível. | Mover o outro carro, ou aceitar duas sessões na mesma vaga. |
-| PARKED repetido é anomalia separada (`ALREADY_PARKED`) | Distingue "carro que nunca entrou" (`PARKED_WITHOUT_ENTRY`) de "carro já estacionado que mandou PARKED de novo", o que facilita a auditoria. A vaga original é mantida pelo mesmo motivo do ENTRY repetido. | Um único tipo para os dois casos, ou trocar de vaga. |
-| PARKED também sob o lock da garagem | Dois PARKED simultâneos para a mesma vaga não podem ambos vê-la livre. O mesmo lock do ENTRY serializa a checagem e a ocupação. | Lock na linha da vaga, que exigiria uma ordem de locks entre garagem e vaga para evitar deadlock com o EXIT. |
-| Coordenadas fora da faixa geográfica respondem 400 | Latitude fora de −90..90 ou longitude fora de −180..180 não é uma posição: é payload inválido, não uma anomalia de negócio. | Tratar como `SPOT_NOT_FOUND`. |
-| Sessão sem PARKED é cobrada na saída pelo menor preço-base da garagem | O carro passou pela cancela e ocupou lugar na garagem, então a permanência é cobrada normalmente. Sem PARKED não há setor, e por isso o preço-base é o menor da garagem (favorável ao cliente, já que não se sabe onde ele parou). A receita fica sem setor: entra no faturamento total, não no de nenhum setor. O preço-base usado fica gravado na sessão e o caso é registrado como anomalia. | Não cobrar, ou cobrar pelo maior preço-base. |
-| EXIT repetido não cobra de novo | Depois do primeiro EXIT a sessão está encerrada, então um segundo EXIT da mesma placa não encontra sessão ativa: é ignorado e vira `EXIT_WITHOUT_ACTIVE_SESSION`. O valor e o horário da primeira saída ficam como estão. | Recalcular o valor com o horário do último EXIT. |
-| Saída anterior à entrada encerra com R$ 0,00 | O carro saiu (o evento diz isso), então a sessão precisa ser encerrada para liberar a vaga e a lotação. Mas uma duração negativa não tem valor a cobrar: o domínio cobra zero e o caso vira `EXIT_BEFORE_ENTRY` para auditoria. O `exit_time` é gravado como recebido. | Ignorar o EXIT e deixar o carro "preso" na lotação, ou trocar os horários. |
-| EXIT sob o lock da garagem, com a vaga liberada na mesma transação | Encerrar a sessão, liberar a vaga e reabrir a cancela são uma operação atômica. Um ENTRY concorrente nunca vê a vaga liberada com a sessão ainda ativa, nem o contrário. | Liberar a vaga numa transação separada. |
-| A placa pode entrar de novo depois de sair | A unicidade é só de sessão **ativa** (`active_plate` vira `NULL` no EXIT). O histórico de permanências da placa fica preservado, uma linha por visita. | Reaproveitar a mesma linha a cada visita, o que apagaria o histórico do faturamento. |
-| `spot.occupied` gravado na vaga | A pergunta "esta vaga está livre?" é respondida direto pela vaga, sob o lock, sem varrer sessões. O EXIT libera a vaga na mesma transação em que encerra a sessão. | Derivar a ocupação das sessões `PARKED` a cada consulta. |
-| MockK no lugar do Mockito | MockK é a biblioteca de mocks idiomática para Kotlin (classes finais, funções de extensão, DSL). O Mockito é excluído do `spring-boot-starter-test` para não haver duas bibliotecas de mock. | Mockito com `mockito-kotlin`. |
+
+## Rastreabilidade dos requisitos
+
+Cada requisito do enunciado, onde ele está no código e qual teste o garante.
+
+| Requisito do enunciado | Implementação | Testes |
+|---|---|---|
+| Java 21, Kotlin 2.1.x, Spring, MySQL, git | `build.gradle.kts` (toolchain 21, Kotlin 2.1.21, Spring Boot 3.5.16), `docker-compose.yml` (MySQL 8.4) | Todo o build; `ParkingApplicationTests` |
+| Ao iniciar, buscar e armazenar os dados da garagem e das vagas | `GarageStartupRunner` → `GarageSetupService` → `SimulatorGarageAdapter` + `GarageConfigurationPersistenceAdapter` | `GarageStartupRunnerTest`, `SimulatorGarageAdapterTest`, `GarageConfigurationPersistenceAdapterTest`, `ParkingApplicationTests`, `SimulatorEndToEndTest` |
+| Webhook `POST http://localhost:3003/webhook` com ENTRY, PARKED e EXIT, respondendo 200 | `WebhookController` (porta 3003 no `application.yml`), `WebhookEvent` | `WebhookEntryTest`, `WebhookParkedTest`, `WebhookExitTest`, `SimulatorEndToEndTest` |
+| Ao entrar, marcar uma vaga como ocupada | `EntryService` (a sessão `ENTERED` conta na lotação) e `ParkedService` (`spot.occupied`) | `EntryServiceTest`, `WebhookEntryTest`, `WebhookParkedTest` |
+| Ao sair, marcar a vaga como disponível e calcular o valor | `ExitService`, `ParkingSession.exit`, `FeeCalculator` | `ExitServiceTest`, `ParkingSessionTest`, `WebhookExitTest` |
+| Primeiros 30 minutos grátis | `FeeCalculator.FREE_PERIOD` | `FeeCalculatorTest` (30 min, 30 min + 1 ms, 30 min + 1 s) |
+| Depois, tarifa por hora com `basePrice`, inclusive a primeira hora, arredondando para cima | `FeeCalculator.chargeableHours` | `FeeCalculatorTest` (59 min, 1 h, 1 h + 1 s, 2 h + 1 s, 24 h) |
+| Garagem cheia não aceita entradas até liberar vaga em qualquer setor | `EntryService` + `OccupancyPricingPolicy` (lotação da garagem inteira) | `OccupancyPricingPolicyTest`, `WebhookEntryTest`, `WebhookExitTest` (cheia → saída → entra), `ConcurrencyTest` |
+| Preço dinâmico em 4 faixas de lotação | `OccupancyPricingPolicy`, `Occupancy` | `OccupancyPricingPolicyTest` (24/25/50/51/75/76/99 de 100; limites de 30 e 4 vagas), `WebhookEntryTest` (sequência 0,90/0,90/1,00/1,10/1,25) |
+| 100% de lotação fecha a garagem | `EntryPricing.GarageFull` | `OccupancyPricingPolicyTest`, `ConcurrencyTest` (20 entradas, 5 vagas) |
+| `GET /revenue`: receita por setor e até o momento para o dia atual | `RevenueController`, `RevenueService`, `RevenuePersistenceAdapter` | `RevenueServiceTest`, `RevenueControllerTest`, `SimulatorEndToEndTest` |
+| Formato da resposta `{amount, currency, timestamp}` | `RevenueResponse` (`amount` com 2 casas, `BRL`, `timestamp` ISO com milissegundos em UTC) | `RevenueControllerTest` (JSON exato, inclusive `0.00`) |
+| Tratamento de eventos e regras de negócio | 9 tipos de anomalia (`AnomalyType`), tabela `anomaly` | Testes de serviço e de webhook, um por anomalia |
+| Tratamento básico de erros | `ApiExceptionHandler` (Problem Details: 400 e 404 com `detail`) | `WebhookEntryTest`, `WebhookParkedTest`, `WebhookExitTest`, `RevenueControllerTest` |
+
+## Limitações conhecidas
+
+- **Eventos perdidos não são recuperados.** O simulador não reenvia eventos. Se a aplicação estiver fora do ar ou devolver erro 5xx (por exemplo, com o banco indisponível), o evento se perde. A lotação do sistema pode então divergir da física. A tabela `anomaly` torna visíveis as consequências (por exemplo, um EXIT de placa sem sessão), mas não corrige o estado.
+- **Eventos fora de ordem são tratados como anomalia, não reordenados.** Um EXIT que chega antes do PARKED encerra a sessão sem setor (`EXIT_WITHOUT_PARKED`), e o PARKED atrasado vira `PARKED_WITHOUT_ENTRY`. O sistema confia na ordem de chegada, e não nos horários dos eventos, para decidir o estado.
+- **Uma única garagem.** O lock numa linha única serializa todos os eventos. Isso é correto e suficiente para uma garagem (um evento a cada poucos segundos), mas várias garagens no mesmo banco precisariam de um lock por garagem.
+- **Regras do simulador não pedidas pelo enunciado são ignoradas.** O horário de funcionamento (`open_hour`/`close_hour`) e o limite de permanência (`duration_limit_minutes`) não viram regra.
+- **Sem autenticação** no webhook e no `/revenue`, porque o enunciado não pede (YAGNI).
 
 ## Branches e commits
 
-Cada bloco funcional tem sua própria branch, criada a partir da `main` atualizada. Cada branch é revisada e mergeada na `main` antes de começar a próxima.
+Cada bloco funcional teve sua própria branch, criada a partir da `main` atualizada, com commits granulares no padrão Conventional Commits. Cada branch foi testada manualmente e mergeada na `main` (merge commit, preservando os commits) antes de começar a próxima.
+
+| # | Branch | Pull request | Conteúdo |
+|---|---|---|---|
+| 1 | `chore/setup-projeto` | #2 (o #1 foi fechado após a reescrita do histórico) | Projeto Gradle Kotlin, Spring Boot 3.5, Java 21 |
+| 2 | `chore/mysql-docker` | #3 | docker-compose com MySQL 8.4, JPA, Flyway, Testcontainers |
+| 3 | `chore/simulador` | #4 | Scripts do simulador e documentação do comportamento real |
+| 4 | `feat/carga-garagem` | #5 | Migration V1 e carga inicial com novas tentativas |
+| 5 | `feat/politica-preco` | #6 | Preço dinâmico e tarifa no domínio |
+| 6 | `feat/entrada` | #7 | Migration V2, webhook e ENTRY com lock |
+| 7 | `feat/parked` | #8 | PARKED e associação de vaga |
+| 8 | `feat/saida` | #9 | EXIT, cálculo e liberação de vaga |
+| 9 | `feat/revenue` | #10 | `GET /revenue` |
+| 10 | `test/concorrencia-e2e` | #11 | Testes de concorrência e ponta a ponta com o simulador real |
+| 11 | `docs/decisoes` | #12 | Decisões agrupadas por tema, rastreabilidade e limitações |
