@@ -25,7 +25,6 @@ class GarageConfigurationPersistenceAdapterTest(
     @Autowired private val spotRepository: SpotJpaRepository,
 ) {
 
-    /** Volta ao estado deixado pela carga da subida, para não afetar os outros testes. */
     @AfterEach
     fun restoreStartupState() {
         spotRepository.saveAll(spotRepository.findAll().onEach { it.occupied = false })

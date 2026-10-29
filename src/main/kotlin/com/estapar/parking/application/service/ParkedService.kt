@@ -23,7 +23,6 @@ class ParkedService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /** Sob o lock da garagem, para dois PARKED simultâneos não ocuparem a mesma vaga. */
     @Transactional
     override fun registerParked(command: ParkedCommand) {
         lockGarage.lockAndGetCapacity()

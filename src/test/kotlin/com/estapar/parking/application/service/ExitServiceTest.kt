@@ -55,7 +55,6 @@ class ExitServiceTest {
 
         assertEquals(SessionStatus.EXITED, saved.captured.status)
         assertEquals(entryTime.plusSeconds(90 * 60), saved.captured.exitTime)
-        // 2 horas × R$ 10,00 × 0,90.
         assertEquals(BigDecimal("18.00"), saved.captured.amount)
         verify { spots.release(spot.id) }
         verify(exactly = 0) { anomalies.record(any(), any(), any()) }
@@ -93,7 +92,6 @@ class ExitServiceTest {
         assertEquals(SessionStatus.EXITED, saved.captured.status)
         assertNull(saved.captured.sectorCode)
         assertEquals(BigDecimal("4.10"), saved.captured.basePrice)
-        // 1 hora × R$ 4,10 × 0,90 = 3,69.
         assertEquals(BigDecimal("3.69"), saved.captured.amount)
         verify(exactly = 0) { spots.release(any()) }
         verify { anomalies.record(AnomalyType.EXIT_WITHOUT_PARKED, "ZUL0001", match { "3.69" in it }) }

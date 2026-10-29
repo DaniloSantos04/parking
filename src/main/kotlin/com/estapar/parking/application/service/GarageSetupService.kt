@@ -6,10 +6,6 @@ import com.estapar.parking.application.port.out.SaveGarageConfigurationPort
 import com.estapar.parking.domain.model.GarageConfiguration
 import org.springframework.stereotype.Service
 
-/**
- * Sem @Transactional aqui de propósito: a chamada HTTP ao simulador não deve segurar uma
- * transação aberta. A gravação é atômica no adapter de persistência.
- */
 @Service
 class GarageSetupService(
     private val fetchGarageConfiguration: FetchGarageConfigurationPort,

@@ -12,24 +12,6 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.ResultActionsDsl
 import org.springframework.test.web.servlet.get
 
-/**
- * GET /revenue ponta a ponta, com receita gerada pelo próprio webhook.
- *
- * Relógio fixo em 2025-01-02T12:00Z (09:00 em São Paulo). Garagem dos testes: vagas 1 e 2 no
- * setor A (R$ 10,00), 3 a 5 no setor B (R$ 4,10). Todos entram com multiplicador 0,90, exceto o
- * CAR0003, que entra com 1,00 (2 de 5 vagas ocupadas, 40%).
- *
- * | Carro   | Setor | Entrada (UTC)    | Saída (UTC)      | Dia da saída (SP) | Valor                     |
- * |---------|-------|------------------|------------------|-------------------|---------------------------|
- * | CAR0001 | A     | 01-01 12:00      | 01-01 14:00      | 01-01             | 2h × 10,00 × 0,90 = 18,00 |
- * | CAR0002 | B     | 01-01 12:00      | 01-01 13:00      | 01-01             | 1h × 4,10 × 0,90 = 3,69   |
- * | CAR0003 | —     | 01-01 12:00      | 01-01 13:00      | 01-01             | 1h × 4,10 × 1,00 = 4,10   |
- * | CAR0004 | A     | 01-01 20:00      | 01-02 02:30      | 01-01 (23:30)     | 7h × 10,00 × 0,90 = 63,00 |
- * | CAR0005 | B     | 01-02 01:00      | 01-02 03:00      | 01-02 (00:00)     | 2h × 4,10 × 0,90 = 7,38   |
- * | CAR0006 | A     | 01-02 10:00      | 01-02 13:00      | depois de "agora" | 3h × 10,00 × 0,90 = 27,00 |
- *
- * CAR0003 saiu sem PARKED: cobrado pelo menor preço-base, sem setor.
- */
 @IntegrationTest
 class RevenueControllerTest(
     @Autowired private val mockMvc: MockMvc,
@@ -100,15 +82,12 @@ class RevenueControllerTest(
 
     @Test
     fun `a receita entra no dia da saida no fuso de Sao Paulo`() {
-        // CAR0004 saiu 02:30 UTC do dia 2, que ainda é 23:30 do dia 1 em São Paulo.
         revenue("?date=2025-01-01&sector=A").andExpectAmount(81.00)
-        // CAR0005 saiu 03:00 UTC do dia 2, que já é 00:00 do dia 2 em São Paulo.
         revenue("?date=2025-01-02&sector=B").andExpectAmount(7.38)
     }
 
     @Test
     fun `sem data usa o dia atual e soma so as saidas ate o momento`() {
-        // Hoje é 2025-01-02 em São Paulo. CAR0006 sai às 13:00 UTC, depois de "agora" (12:00 UTC).
         revenue().andExpectAmount(7.38)
         revenue("?date=2025-01-02").andExpectAmount(7.38)
     }

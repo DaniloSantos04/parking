@@ -24,7 +24,6 @@ import java.time.Instant
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 
-/** ENTRY ponta a ponta: HTTP → serviço → MySQL. A garagem dos testes tem capacidade 5. */
 @IntegrationTest
 class WebhookEntryTest(
     @Autowired mockMvc: MockMvc,
@@ -71,7 +70,6 @@ class WebhookEntryTest(
     fun `trava o multiplicador pela lotacao antes de cada entrada`() {
         (1..5).forEach { entry("CAR000$it").andExpect { status { isOk() } } }
 
-        // Capacidade 5: antes de cada entrada havia 0, 1, 2, 3 e 4 carros (0%, 20%, 40%, 60% e 80%).
         val multipliers = sessionRepository.findAll().sortedBy { it.id }.map { it.priceMultiplier }
         assertEquals(listOf("0.90", "0.90", "1.00", "1.10", "1.25").map(::BigDecimal), multipliers)
     }

@@ -20,12 +20,9 @@ class FlexibleInstantDeserializerTest {
 
     @ParameterizedTest(name = "{0} → {1}")
     @CsvSource(
-        // Formato do exemplo do enunciado.
         "2025-01-01T12:00:00.000Z, 2025-01-01T12:00:00Z",
-        // Formato real do simulador: sem fuso, interpretado como UTC.
         "2026-10-27T22:00:24, 2026-10-27T22:00:24Z",
         "2025-01-01T12:00:00.123, 2025-01-01T12:00:00.123Z",
-        // Fuso explícito diferente de UTC é respeitado.
         "2025-01-01T09:00:00-03:00, 2025-01-01T12:00:00Z",
         "2025-01-01T12:00:00+00:00, 2025-01-01T12:00:00Z",
     )

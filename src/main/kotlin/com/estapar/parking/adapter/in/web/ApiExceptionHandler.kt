@@ -17,14 +17,9 @@ import org.springframework.web.context.request.WebRequest
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler
 import java.time.LocalDate
 
-/**
- * Respostas de erro no formato Problem Details (RFC 9457), com `detail` dizendo o que corrigir.
- * A classe base cuida das demais exceções do Spring MVC.
- */
 @RestControllerAdvice
 class ApiExceptionHandler : ResponseEntityExceptionHandler() {
 
-    /** JSON malformado, campo ausente ou com tipo errado, `event_type` desconhecido. */
     override fun handleHttpMessageNotReadable(
         ex: HttpMessageNotReadableException,
         headers: HttpHeaders,
@@ -39,7 +34,6 @@ class ApiExceptionHandler : ResponseEntityExceptionHandler() {
         return badRequest(ex, detail, headers, request)
     }
 
-    /** Falha de Bean Validation no corpo (placa em branco, placa longa demais...). */
     override fun handleMethodArgumentNotValid(
         ex: MethodArgumentNotValidException,
         headers: HttpHeaders,
@@ -50,7 +44,6 @@ class ApiExceptionHandler : ResponseEntityExceptionHandler() {
         return badRequest(ex, detail, headers, request)
     }
 
-    /** Parâmetro de URL com tipo errado, como `GET /revenue?date=01/01/2025`. */
     override fun handleTypeMismatch(
         ex: TypeMismatchException,
         headers: HttpHeaders,
@@ -65,13 +58,11 @@ class ApiExceptionHandler : ResponseEntityExceptionHandler() {
     fun handleSectorNotFound(ex: SectorNotFoundException): ProblemDetail =
         ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "Setor não encontrado: ${ex.sectorCode}")
 
-    /** Requisições rejeitadas não chegam ao controller; o WARN garante que também fiquem no log. */
     private fun badRequest(ex: Exception, detail: String, headers: HttpHeaders, request: WebRequest): ResponseEntity<Any>? {
         logger.warn("Requisição rejeitada com 400 em ${request.getDescription(false)}: $detail")
         return handleExceptionInternal(ex, ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, detail), headers, HttpStatus.BAD_REQUEST, request)
     }
 
-    /** Caminho do campo no JSON, com os nomes do contrato (ex.: "entry_time"). */
     private fun JsonMappingException.fieldPath(): String? =
         path.mapNotNull { it.fieldName ?: it.index.takeIf { i -> i >= 0 }?.let { i -> "[$i]" } }
             .joinToString(".")

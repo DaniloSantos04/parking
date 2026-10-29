@@ -18,10 +18,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * PARKED ponta a ponta: HTTP → serviço → MySQL. Vagas dos testes: 1 e 2 no setor A (R$ 10,00),
- * 3 a 5 no setor B (R$ 4,10).
- */
 @IntegrationTest
 class WebhookParkedTest(
     @Autowired mockMvc: MockMvc,

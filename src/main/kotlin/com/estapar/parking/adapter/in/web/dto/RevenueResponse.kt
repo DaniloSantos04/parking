@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonFormat
 import java.math.BigDecimal
 import java.time.Instant
 
-/** Corpo do GET /revenue, no formato do enunciado: `{"amount": 0.00, "currency": "BRL", "timestamp": "2025-01-01T12:00:00.000Z"}`. */
 @JvmRecord
 data class RevenueResponse(
     val amount: BigDecimal,

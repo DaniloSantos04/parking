@@ -28,14 +28,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Ponta a ponta com o simulador real (`cfontes0estapar/garage-sim:1.0.0`) num container: a
- * aplicação inteira sobe, carrega o GET /garage do simulador e recebe os eventos reais no webhook,
- * gravando no MySQL real. Leva cerca de 1 minuto, porque espera o simulador gerar saídas.
- *
- * O simulador só começa a enviar eventos depois do primeiro GET /garage, que é o da aplicação ao
- * subir. Por isso o container espera pelo log de inicialização, e não por uma chamada HTTP.
- */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT)
 @Import(TestcontainersConfiguration::class)
 @ExtendWith(OutputCaptureExtension::class)
@@ -59,7 +51,6 @@ class SimulatorEndToEndTest(
         @JvmStatic
         @DynamicPropertySource
         fun properties(registry: DynamicPropertyRegistry) {
-            // O container precisa enxergar a porta da aplicação no host antes de subir.
             Testcontainers.exposeHostPorts(appPort)
             simulator.start()
             registry.add("server.port") { appPort }
@@ -71,7 +62,6 @@ class SimulatorEndToEndTest(
 
     @Test
     fun `processa os eventos reais do simulador de ponta a ponta`(output: CapturedOutput) {
-        // Carga inicial com os dados reais do simulador.
         assertEquals(setOf("A", "B"), sectorRepository.findAll().map { it.code }.toSet())
         assertEquals(30, spotRepository.count())
         assertEquals(30, garageRepository.findById(GarageEntity.SINGLETON_ID).orElseThrow().capacity)
@@ -84,22 +74,18 @@ class SimulatorEndToEndTest(
         val parked = sessions.filter { it.status == SessionStatus.PARKED }
         val exited = sessions.filter { it.status == SessionStatus.EXITED }
 
-        // Todos os eventos foram aceitos e aplicados, sem nenhuma anomalia.
         assertFalse(output.out.contains("Requisição rejeitada"), "algum evento do simulador recebeu 400")
         assertEquals(emptyList(), anomalyRepository.findAll().map { it.type })
 
-        // Ocupação das vagas coerente com as sessões estacionadas.
         assertEquals(parked.size, spotRepository.findAll().count { it.occupied })
         assertEquals(parked.size, parked.mapNotNull { it.spotId }.toSet().size)
 
-        // Saídas cobradas: setor e preço do PARKED, valor calculado, saída depois da entrada.
         exited.forEach {
             assertTrue(it.sectorCode in setOf("A", "B"))
             assertTrue(it.amount != null && it.amount!!.scale() == 2)
             assertFalse(it.exitTime!!.isBefore(it.entryTime))
         }
 
-        // A receita de hoje bate com a soma das saídas gravadas.
         val revenue = api.get().uri("/revenue").retrieve().body<Map<String, Any>>()!!
         assertEquals("BRL", revenue["currency"])
         assertEquals(

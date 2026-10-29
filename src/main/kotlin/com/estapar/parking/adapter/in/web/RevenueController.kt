@@ -9,10 +9,6 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import java.time.LocalDate
 
-/**
- * GET /revenue?date=2025-01-01&sector=A. Os dois parâmetros são opcionais: sem `date`, o dia atual
- * (São Paulo); sem `sector`, a garagem inteira.
- */
 @RestController
 class RevenueController(
     private val getRevenue: GetRevenueUseCase,

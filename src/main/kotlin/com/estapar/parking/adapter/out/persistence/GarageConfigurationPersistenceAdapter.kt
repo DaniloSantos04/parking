@@ -20,10 +20,6 @@ class GarageConfigurationPersistenceAdapter(
     private val spotRepository: SpotJpaRepository,
 ) : SaveGarageConfigurationPort {
 
-    /**
-     * Upsert por chave: setores pelo código, vagas pelo id. Uma vaga que já existe mantém o
-     * campo occupied, que pertence ao estado da aplicação e não à configuração do simulador.
-     */
     @Transactional
     override fun save(configuration: GarageConfiguration) {
         upsertSectors(configuration.sectors)

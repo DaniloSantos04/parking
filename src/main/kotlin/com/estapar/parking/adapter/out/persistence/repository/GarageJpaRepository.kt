@@ -8,7 +8,6 @@ import org.springframework.data.jpa.repository.Query
 
 interface GarageJpaRepository : JpaRepository<GarageEntity, Int> {
 
-    /** SELECT ... FOR UPDATE: segura a linha até o fim da transação. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select g from GarageEntity g where g.id = :id")
     fun findByIdForUpdate(id: Int): GarageEntity?

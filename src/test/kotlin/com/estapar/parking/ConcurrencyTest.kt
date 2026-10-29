@@ -22,13 +22,6 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Eventos simultâneos contra o MySQL real, chamando os casos de uso direto (com transação e lock
- * de verdade). Garagem dos testes: capacidade 5, vagas 1 a 5.
- *
- * Sem o lock pessimista na garagem, várias threads contariam a mesma lotação ao mesmo tempo:
- * entrariam mais carros que vagas e vários pagariam o mesmo multiplicador.
- */
 @IntegrationTest
 class ConcurrencyTest(
     @Autowired private val registerEntry: RegisterEntryUseCase,
@@ -45,7 +38,6 @@ class ConcurrencyTest(
     @BeforeEach
     fun cleanDatabase() = databaseCleaner.clean()
 
-    /** Dispara todas as tarefas ao mesmo tempo (uma thread cada) e espera todas terminarem. */
     private fun runConcurrently(tasks: List<() -> Unit>) {
         val executor = Executors.newFixedThreadPool(tasks.size)
         val start = CountDownLatch(1)
@@ -68,7 +60,6 @@ class ConcurrencyTest(
 
         assertEquals(5, sessionRepository.count())
         assertEquals(15, anomalyCount(AnomalyType.GARAGE_FULL))
-        // Cada entrada viu uma lotação diferente (0, 1, 2, 3 e 4 de 5): a contagem foi serializada.
         assertEquals(
             listOf("0.90", "0.90", "1.00", "1.10", "1.25").map(::BigDecimal),
             sessionRepository.findAll().map { it.priceMultiplier }.sorted(),
@@ -114,7 +105,6 @@ class ConcurrencyTest(
         val accepted = active.count { it.licensePlate.startsWith("NEW") }
         assertTrue(active.size <= 5, "lotação final ${active.size} passou da capacidade 5")
         assertEquals(10, accepted + anomalyCount(AnomalyType.GARAGE_FULL))
-        // Todas as saídas foram processadas e liberaram as vagas.
         assertEquals(5, sessionRepository.findAll().count { it.status == SessionStatus.EXITED })
         assertEquals(0, spotRepository.findAll().count { it.occupied })
     }

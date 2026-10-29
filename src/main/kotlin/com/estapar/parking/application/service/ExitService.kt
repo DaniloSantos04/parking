@@ -23,7 +23,6 @@ class ExitService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /** Sob o lock da garagem: encerrar a sessão e liberar a vaga reabre a cancela de forma atômica. */
     @Transactional
     override fun registerExit(command: ExitCommand) {
         lockGarage.lockAndGetCapacity()

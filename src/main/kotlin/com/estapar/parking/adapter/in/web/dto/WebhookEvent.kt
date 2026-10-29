@@ -13,7 +13,6 @@ import jakarta.validation.constraints.Size
 import java.math.BigDecimal
 import java.time.Instant
 
-/** Corpo do POST /webhook. O tipo concreto é escolhido pelo campo `event_type`. */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "event_type")
 @JsonSubTypes(
     JsonSubTypes.Type(value = EntryEvent::class, name = "ENTRY"),

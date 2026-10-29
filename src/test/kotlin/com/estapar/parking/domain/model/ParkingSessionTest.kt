@@ -54,7 +54,6 @@ class ParkingSessionTest {
         assertEquals(entryTime.plusSeconds(2 * 3600 + 1), exited.exitTime)
         assertEquals(BigDecimal("10.00"), exited.basePrice)
         assertEquals("A", exited.sectorCode)
-        // 3 horas cobradas × R$ 10,00 × 1,10.
         assertEquals(BigDecimal("33.00"), exited.amount)
     }
 
@@ -66,7 +65,6 @@ class ParkingSessionTest {
         assertNull(exited.sectorCode)
         assertNull(exited.spotId)
         assertEquals(lowest, exited.basePrice)
-        // 1 hora × R$ 4,10 × 1,10 = 4,51.
         assertEquals(BigDecimal("4.51"), exited.amount)
     }
 

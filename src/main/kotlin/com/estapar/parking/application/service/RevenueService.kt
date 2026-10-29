@@ -13,10 +13,6 @@ import java.math.RoundingMode
 import java.time.Clock
 import java.time.ZoneId
 
-/**
- * A receita entra no dia da **saída**, no fuso de São Paulo, e conta só as saídas já ocorridas
- * ("até o momento"): para o dia atual, o intervalo termina agora; para dias passados, à meia-noite.
- */
 @Service
 class RevenueService(
     private val revenuePort: RevenuePort,

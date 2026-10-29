@@ -13,7 +13,6 @@ interface ParkingSessionJpaRepository : JpaRepository<ParkingSessionEntity, Long
 
     fun countByStatusIn(statuses: Collection<SessionStatus>): Long
 
-    /** Usa o índice (status, exit_time, sector_code). */
     @Query(
         """
         select coalesce(sum(s.amount), 0) from ParkingSessionEntity s

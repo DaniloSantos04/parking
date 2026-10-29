@@ -77,7 +77,6 @@ class GarageStartupRunnerTest {
         assertThrows<GarageLoadException> { slowRunner.run(args) }
         val elapsed = Duration.ofNanos(System.nanoTime() - start)
 
-        // 3 tentativas, 2 esperas entre elas, nenhuma depois da última.
         assert(elapsed >= interval.multipliedBy(2)) { "esperou só $elapsed" }
         assert(elapsed < interval.multipliedBy(3)) { "esperou demais: $elapsed" }
     }

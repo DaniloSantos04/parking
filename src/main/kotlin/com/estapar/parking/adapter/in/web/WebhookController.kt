@@ -19,11 +19,6 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RestController
 
-/**
- * Recebe os eventos do simulador. Responde 200 sempre que o evento é bem formado, inclusive
- * quando a regra de negócio o recusa (a recusa vira anomalia registrada). Payload malformado
- * responde 400.
- */
 @RestController
 class WebhookController(
     private val registerEntry: RegisterEntryUseCase,
